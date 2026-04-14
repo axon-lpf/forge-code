@@ -157,15 +157,18 @@ class ForgeChatPanel(private val project: Project) {
             val providers = llmService.getProviderList()
             val settings = ForgeSettings.getInstance()
 
+            // 获取系统用户名
+            val sysUser = System.getProperty("user.name") ?: "You"
             val initData = mapOf(
-                "backendOnline" to true,  // 内置 Provider，始终在线
+                "backendOnline" to true,
                 "activeProvider" to (activeInfo.provider ?: ""),
                 "activeModel" to (activeInfo.model ?: ""),
                 "models" to providers,
                 "theme" to settings.theme,
                 "language" to settings.language,
                 "defaultMode" to settings.defaultMode,
-                "projectName" to (project.name)
+                "projectName" to (project.name),
+                "userName" to sysUser
             )
             executeJS("window.onInit && window.onInit(${gson.toJson(initData)})")
         }
@@ -464,11 +467,14 @@ class ForgeChatPanel(private val project: Project) {
             userMessage = content,
             sessionHistory = history,
             onStep = { step ->
+                // toolResult 可能含有文件内容（反引号、$、\），需要 Base64 编码避免 JS 注入问题
+                val safeResult = java.util.Base64.getEncoder()
+                    .encodeToString((step.toolResult ?: "").toByteArray(Charsets.UTF_8))
                 val stepJson = gson.toJson(mapOf(
                     "type" to step.type.name,
                     "content" to step.content,
                     "toolName" to (step.toolName ?: ""),
-                    "toolResult" to (step.toolResult ?: "")
+                    "toolResultB64" to safeResult   // Base64 编码的工具结果
                 ))
                 executeJS("window.onAgentStep && window.onAgentStep($stepJson)")
             },

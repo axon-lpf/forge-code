@@ -256,10 +256,15 @@ html, body {
     background: var(--user-bubble);
     border-radius: var(--radius) var(--radius-sm) var(--radius) var(--radius);
     padding: 10px 14px;
-    max-width: 80%;
+    max-width: 100%;
+    width: fit-content;          /* 内容多少宽多少 */
     line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-word;
+    overflow-wrap: break-word;
+}
+.user-msg-body {
+    max-width: 82%;              /* 超过面板 82% 才换行 */
 }
 
 /* AI 消息 — 左对齐 */
@@ -697,23 +702,36 @@ html, body {
     font-weight: 500;
 }
 
-/* ==================== AI 消息头部（模型名称）==================== */
-.ai-message-header {
+/* ==================== CodeMaker 风格消息头部 ==================== */
+.cm-msg-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-    min-height: 16px;
+    gap: 8px;
+    margin-bottom: 5px;
 }
-.ai-model-label {
+.cm-brand {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.cm-meta {
     font-size: 11px;
     color: var(--text-secondary);
-    background: rgba(99,102,241,0.1);
-    border: 1px solid rgba(99,102,241,0.2);
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-family: monospace;
-    letter-spacing: 0.3px;
+}
+
+/* ==================== 用户消息头部（用户名）==================== */
+.user-msg-body {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    max-width: 82%;
+}
+.user-name-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    padding-right: 4px;
 }
 
 /* ==================== Agent 工具执行面板（唯一面板）==================== */
@@ -816,6 +834,48 @@ html, body {
     flex-shrink: 0;
     font-size: 11px;
     color: #4ade80;
+}
+
+/* ==================== 工具面板折叠标题 & 操作行 ==================== */
+.ap-collapse-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    user-select: none;
+}
+.ap-done-check { color: #4ade80; font-size: 13px; flex-shrink: 0; }
+.ap-collapse-label { flex-shrink: 0; }
+.ap-collapse-meta { color: var(--text-secondary); font-size: 11px; font-weight: 400; flex: 1; }
+.ap-collapse-arrow { color: var(--text-secondary); font-size: 10px; flex-shrink: 0; }
+.ap-thinking-text { padding: 0 10px 6px 10px; font-size: 12px; color: var(--text-secondary); font-style: italic; }
+
+.ap-rows { display: flex; flex-direction: column; }
+.ap-row { border-top: 1px solid rgba(255,255,255,0.05); font-size: 12px; }
+.ap-row-header {
+    display: flex; align-items: center; gap: 7px;
+    padding: 5px 10px; cursor: pointer; user-select: none;
+    transition: background 0.1s;
+}
+.ap-row-header:hover { background: rgba(255,255,255,0.03); }
+.ap-row-ok  { color: #4ade80; font-size: 11px; flex-shrink: 0; font-weight: 700; }
+.ap-row-err { color: #f87171; font-size: 11px; flex-shrink: 0; font-weight: 700; }
+.ap-row-label { color: var(--text-secondary); flex-shrink: 0; min-width: 64px; font-size: 11px; }
+.ap-row-detail {
+    flex: 1; color: var(--text-primary); font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ap-row-lines { color: var(--accent); font-size: 10px; margin-left: 6px; opacity: 0.8; }
+.ap-row-arrow { font-size: 9px; color: var(--text-secondary); flex-shrink: 0; }
+.ap-row-body { background: rgba(0,0,0,0.15); padding: 6px 10px; border-top: 1px solid rgba(255,255,255,0.04); }
+.ap-row-content {
+    margin: 0;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    font-size: 11px; color: #a8b3cf; white-space: pre-wrap; word-break: break-all;
+    max-height: 160px; overflow-y: auto; line-height: 1.5;
 }
 
 /* ==================== Spec 计划卡片 ==================== */

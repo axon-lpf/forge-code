@@ -30,6 +30,7 @@ window.onInit = function(data) {
     if (data.projectName) {
         document.getElementById('project-name').textContent = data.projectName;
     }
+    state.userName = data.userName || 'You';
     if (data.activeModel) {
         state.activeProvider = data.activeProvider || '';
         state.activeModel = data.activeModel || '';
@@ -174,7 +175,11 @@ window.onAgentStep = function(step) {
             break;
         case 'TOOL_CALL':
             removeThinking();
-            updateAgentPanel(step.toolName, step.content === 'success', step.toolResult || '');
+            // toolResultB64 是 Base64 编码的工具结果，需要解码
+            const toolResult = step.toolResultB64
+                ? decodeURIComponent(escape(atob(step.toolResultB64)))
+                : (step.toolResult || '');
+            updateAgentPanel(step.toolName, step.content === 'success', toolResult);
             break;
         case 'RESPONSE':
             // 最终回复来临：先完成面板（变绿），再移除 thinking，然后等待 token 流
@@ -213,81 +218,133 @@ let agentPanelItems = [];
  * 更新（或创建）唯一的工具执行面板
  * 执行中：转圈 + 显示当前正在执行的操作
  */
+// agentStartTime 记录 Agent 开始时间，用于计算耗时
+let agentStartTime = 0;
+
 function updateAgentPanel(toolName, success, result) {
+    if (agentPanelItems.length === 0) agentStartTime = Date.now();
     agentPanelItems.push({ tool: toolName, success, result });
 
     if (!agentPanelEl) {
-        // 外层与 AI 消息对齐（含 🔥 头像 + 模型名）
+        // 外层与 AI 消息对齐（含 🔥 头像 + 模型名 + 时间戳）
         const wrap = document.createElement('div');
         wrap.className = 'message ai-message agent-panel-wrap';
         const panelId = 'agent-panel-' + Date.now();
         wrap.id = panelId;
-        const modelLabel = state.activeModel
-            ? `<span class="ai-model-label">${state.activeProvider ? state.activeProvider + ' · ' : ''}${state.activeModel}</span>`
-            : '';
+        const now = new Date();
+        const timeStr = now.getHours().toString().padStart(2,'0') + ':' +
+                        now.getMinutes().toString().padStart(2,'0') + ':' +
+                        now.getSeconds().toString().padStart(2,'0');
+        const modelName = state.activeModel || '';
+        const providerName = state.activeProvider || '';
         wrap.innerHTML = `
             <div class="ai-avatar">🔥</div>
             <div class="message-content">
-                <div class="ai-message-header">${modelLabel}</div>
-                <div class="agent-panel running" id="${panelId}-panel"></div>
+                <div class="cm-msg-header">
+                    <span class="cm-brand">Forge Code</span>
+                    <span class="cm-meta">${timeStr}${modelName ? ' · ' + providerName + ' ' + modelName : ''}</span>
+                </div>
+                <div class="agent-panel running" id="${panelId}-panel">
+                    <div class="ap-collapse-title">
+                        <span class="ap-spinner"></span>
+                        <span class="ap-collapse-label">文件读取</span>
+                    </div>
+                    <div class="ap-thinking-text" id="${panelId}-thinking">让我先探索一下项目结构。</div>
+                    <div class="ap-rows" id="${panelId}-rows"></div>
+                </div>
             </div>`;
         document.getElementById('messages').appendChild(wrap);
         agentPanelEl = document.getElementById(panelId + '-panel');
     }
 
-    // 执行中：转圈 + 当前步骤
-    const cur = agentPanelItems[agentPanelItems.length - 1];
-    const icon = TOOL_ICONS[cur.tool] || '🔧';
-    const label = TOOL_LABELS[cur.tool] || cur.tool;
-    agentPanelEl.innerHTML = `
-        <div class="ap-header">
-            <span class="ap-spinner"></span>
-            <span class="ap-status-text">${icon} ${label}（已执行 ${agentPanelItems.length} 步）</span>
-        </div>`;
+    // 累加新的操作行
+    _appendToolRow(toolName, success, result);
     scrollToBottom();
 }
 
+/** 在面板内追加一条操作行 */
+function _appendToolRow(toolName, success, result) {
+    const panelId = agentPanelEl.id;
+    const rowsEl = document.getElementById(panelId + '-rows');
+    if (!rowsEl) return;
+
+    const icon = TOOL_ICONS[toolName] || '🔧';
+    const label = TOOL_LABELS[toolName] || toolName;
+    const rowId = panelId + '-row-' + agentPanelItems.length;
+
+    // 提取路径/关键词
+    let detail = '';
+    try {
+        // result 通常是 "### path\n```\ncontent\n```" 或文件列表
+        const firstLine = (result || '').split('\n')[0].replace(/^###\s*/, '').trim();
+        detail = firstLine.length > 60 ? firstLine.slice(0, 60) + '…' : firstLine;
+    } catch(e) { detail = ''; }
+
+    // 统计行数
+    const lineCount = (result || '').split('\n').length;
+    const lineInfo = lineCount > 3 ? ` <span class="ap-row-lines">引用行数: 1:${lineCount}</span>` : '';
+
+    const statusIcon = success
+        ? '<span class="ap-row-ok">✓</span>'
+        : '<span class="ap-row-err">✗</span>';
+
+    const row = document.createElement('div');
+    row.className = 'ap-row';
+    row.id = rowId;
+    row.innerHTML = `
+        <div class="ap-row-header" onclick="toggleApRow('${rowId}')">
+            ${statusIcon}
+            <span class="ap-row-label">${label}</span>
+            <span class="ap-row-detail">${escapeHtml(detail)}${lineInfo}</span>
+            <span class="ap-row-arrow">∨</span>
+        </div>
+        <div class="ap-row-body" style="display:none">
+            <pre class="ap-row-content">${escapeHtml((result||'').split('\n').slice(0,20).join('\n'))}</pre>
+        </div>`;
+    rowsEl.appendChild(row);
+}
+
+function toggleApRow(rowId) {
+    const row = document.getElementById(rowId);
+    if (!row) return;
+    const body = row.querySelector('.ap-row-body');
+    const arrow = row.querySelector('.ap-row-arrow');
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'block';
+    arrow.textContent = isOpen ? '∨' : '∧';
+}
+
 /**
- * 所有工具执行完成，面板切换为完成状态（可展开查看详情）
+ * 所有工具执行完成，面板切换为完成状态
  */
 function finalizeAgentPanel() {
-    if (!agentPanelEl || agentPanelItems.length === 0) {
-        agentPanelEl = null;
-        agentPanelItems = [];
-        return;
+    if (!agentPanelEl) return;
+
+    const elapsed = agentStartTime ? ((Date.now() - agentStartTime) / 1000).toFixed(1) + 's' : '';
+    const count = agentPanelItems.length;
+
+    // 更新转圈为 ✓ 折叠标题
+    const collapseTitle = agentPanelEl.querySelector('.ap-collapse-title');
+    if (collapseTitle) {
+        const panelId = agentPanelEl.id;
+        collapseTitle.onclick = () => {
+            const rows = document.getElementById(panelId + '-rows');
+            const thinking = document.getElementById(panelId + '-thinking');
+            const arrow = collapseTitle.querySelector('.ap-collapse-arrow');
+            const isOpen = rows && rows.style.display !== 'none';
+            if (rows) rows.style.display = isOpen ? 'none' : 'block';
+            if (thinking) thinking.style.display = isOpen ? 'none' : 'block';
+            if (arrow) arrow.textContent = isOpen ? '∨' : '∧';
+        };
+        collapseTitle.style.cursor = 'pointer';
+        collapseTitle.innerHTML = `
+            <span class="ap-done-check">✓</span>
+            <span class="ap-collapse-label">文件读取</span>
+            <span class="ap-collapse-meta">${count} 个操作${elapsed ? ' · ' + elapsed : ''}</span>
+            <span class="ap-collapse-arrow">∨</span>`;
     }
-
-    const items = agentPanelItems;
-    const panelId = agentPanelEl.id;
-    const count = items.length;
-    const hasError = items.some(i => !i.success);
-    const toolTypes = [...new Set(items.map(i => i.tool))];
-    const summaryIcons = toolTypes.map(t => (TOOL_ICONS[t] || '🔧') + ' ' + (TOOL_LABELS[t] || t)).join('  ·  ');
-    const doneIcon = hasError ? '⚠️' : '✅';
-
-    agentPanelEl.innerHTML = `
-        <div class="ap-header ap-clickable" onclick="toggleAgentPanel('${panelId}')">
-            <span class="ap-done-icon">${doneIcon}</span>
-            <span class="ap-status-text">已完成 ${count} 步分析</span>
-            <span class="ap-summary-icons">${summaryIcons}</span>
-            <span class="ap-arrow" id="ap-arrow-${panelId}">▶</span>
-        </div>
-        <div class="ap-detail" id="ap-detail-${panelId}" style="display:none">
-            ${items.map(item => {
-                const ic = TOOL_ICONS[item.tool] || '🔧';
-                const lb = TOOL_LABELS[item.tool] || item.tool;
-                const preview = (item.result || '').split('\n').filter(l => l.trim()).slice(0, 2).join(' ').slice(0, 100);
-                return `<div class="ap-item">
-                    <span class="ap-item-ic">${ic}</span>
-                    <span class="ap-item-lb">${lb}</span>
-                    <span class="ap-item-preview">${escapeHtml(preview)}</span>
-                    <span class="ap-item-ok">${item.success ? '✓' : '✗'}</span>
-                </div>`;
-            }).join('')}
-        </div>`;
-
+    agentPanelEl.classList.remove('running');
     agentPanelEl.classList.add('done');
-    // 重置，下一次 Agent 任务创建新面板
     agentPanelEl = null;
     agentPanelItems = [];
     scrollToBottom();
@@ -1013,10 +1070,14 @@ function closeModelDropdown() {
 // ==================== 消息渲染 ====================
 
 function addUserMessage(content) {
+    const userName = state.userName || 'You';
     const msgEl = document.createElement('div');
     msgEl.className = 'message user-message';
     msgEl.innerHTML = `
-        <div class="message-bubble">${escapeHtml(content)}</div>
+        <div class="user-msg-body">
+            <div class="user-name-label">${escapeHtml(userName)}</div>
+            <div class="message-bubble">${escapeHtml(content)}</div>
+        </div>
         <div class="user-avatar">👤</div>`;
     document.getElementById('messages').appendChild(msgEl);
     scrollToBottom();
@@ -1028,15 +1089,23 @@ let mdRenderTimer = null;
 
 function addAiMessagePlaceholder() {
     currentAiRaw = '';
-    const modelLabel = state.activeModel
-        ? `<span class="ai-model-label">${state.activeProvider ? state.activeProvider + ' · ' : ''}${state.activeModel}</span>`
-        : '';
+    const now = new Date();
+    const timeStr = now.getHours().toString().padStart(2,'0') + ':' +
+                    now.getMinutes().toString().padStart(2,'0') + ':' +
+                    now.getSeconds().toString().padStart(2,'0');
+    const modelName = state.activeModel || '';
+    const providerName = state.activeProvider || '';
+    const metaStr = [timeStr, providerName, modelName].filter(Boolean).join(' · ');
+
     const msgEl = document.createElement('div');
     msgEl.className = 'message ai-message';
     msgEl.innerHTML = `
         <div class="ai-avatar">🔥</div>
         <div class="message-content">
-            <div class="ai-message-header">${modelLabel}</div>
+            <div class="cm-msg-header">
+                <span class="cm-brand">Forge Code</span>
+                <span class="cm-meta">${metaStr}</span>
+            </div>
             <div class="message-text streaming" id="ai-streaming"></div>
         </div>`;
     document.getElementById('messages').appendChild(msgEl);
