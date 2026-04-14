@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forge Code</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ===== 顶部工具栏 ===== -->
+<div class="toolbar">
+    <span class="toolbar-title">🔥 Forge Code</span>
+    <div class="toolbar-actions">
+        <button class="icon-btn" onclick="newSession()" title="新建会话">＋</button>
+        <button class="icon-btn" onclick="openSettings()" title="设置">⚙</button>
+    </div>
+</div>
+
+<!-- ===== Tab 栏 ===== -->
+<div class="tab-bar">
+    <div class="tab active" onclick="switchTab('chat')">Chat</div>
+    <div class="tab" onclick="switchTab('review')">Review</div>
+</div>
+
+<!-- ===== 主体内容区 ===== -->
+<div class="main-content" id="tab-chat">
+
+    <!-- 欢迎页（无消息时显示） -->
+    <div class="welcome" id="welcome-screen">
+        <div class="welcome-logo">🔥</div>
+        <div class="welcome-title">Forge Code</div>
+        <div class="welcome-sub">锻造每一行代码</div>
+
+        <!-- 模式卡片 -->
+        <div class="mode-cards">
+            <div class="mode-card active" id="card-vibe" onclick="selectMode('vibe')">
+                <div class="mode-card-title">Vibe</div>
+                <div class="mode-card-desc">边聊边写，先跑起来再优化的直觉式编程</div>
+            </div>
+            <div class="mode-card" id="card-spec" onclick="selectMode('spec')">
+                <div class="mode-card-title">Spec</div>
+                <div class="mode-card-desc">先规划后实现，按工程标准逐步构建</div>
+            </div>
+        </div>
+
+        <!-- 适用场景 -->
+        <div class="scene-section" id="scene-vibe">
+            <div class="scene-title">适用场景：</div>
+            <div class="scene-item">• 通过对话描述想法，无需文档</div>
+            <div class="scene-item">• 基于反馈进行增量式改进和功能扩展</div>
+            <div class="scene-item">• 适合：原型开发、探索性编程、小型项目</div>
+            <div class="suggest-btn" onclick="toggleSuggestions()">推荐问题 ∧</div>
+            <div class="suggestions" id="suggestions">
+                <div class="suggestion" onclick="sendSuggestion(this)">帮我创建一个 Spring Boot REST API 项目骨架</div>
+                <div class="suggestion" onclick="sendSuggestion(this)">解释一下这个项目的整体架构</div>
+                <div class="suggestion" onclick="sendSuggestion(this)">帮我找出代码中的潜在问题</div>
+                <div class="suggestion" onclick="sendSuggestion(this)">生成这个类的单元测试</div>
+            </div>
+        </div>
+
+        <!-- 当前项目 -->
+        <div class="project-bar" id="project-bar">
+            <span>📁 代码仓库</span>
+            <span id="project-name">未知项目</span>
+        </div>
+    </div>
+
+    <!-- 对话消息列表 -->
+    <div class="messages" id="messages" style="display:none"></div>
+
+</div>
+
+<!-- Review Tab（预留） -->
+<div class="main-content" id="tab-review" style="display:none">
+    <div class="welcome">
+        <div class="welcome-logo">🔍</div>
+        <div class="welcome-title">Code Review</div>
+        <div class="welcome-sub">代码审查功能即将上线</div>
+    </div>
+</div>
+
+<!-- ===== 底部输入区 ===== -->
+<div class="input-area">
+    <div class="input-box">
+        <textarea
+            id="user-input"
+            placeholder="输入消息... (Shift+Enter 换行，Enter 发送)"
+            rows="1"
+            onkeydown="handleKeyDown(event)"
+            oninput="autoResize(this)">
+        </textarea>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()">▶</button>
+        <button class="stop-btn" id="stop-btn" onclick="cancelMessage()" style="display:none">■</button>
+    </div>
+    <div class="bottom-bar">
+        <div class="mode-selector" onclick="toggleModeMenu()">
+            <span id="current-mode-text">Agent 仓库智聊</span>
+            <span>∨</span>
+        </div>
+        <div class="model-selector" onclick="openModelPicker()">
+            <span>⚡</span>
+            <span id="current-model-text">加载中...</span>
+            <span>∨</span>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 离线提示 ===== -->
+<div class="offline-banner" id="offline-banner" style="display:none">
+    ⚠️ 后端未连接，请先启动 claude-api-proxy 服务
+    <button onclick="retryConnect()">重试</button>
+</div>
+
+<script src="js/bridge.js"></script>
+<script src="js/marked.min.js"></script>
+<script src="js/chat.js"></script>
+</body>
+</html>

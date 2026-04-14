@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+
+# 注意：gradle-wrapper.jar 故意不忽略，必须提交到 Git
+# 否则换电脑后 Gradle 无法启动，会卡在 Build model...
+!gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+out/
+
+# OS
+.DS_Store
+Thumbs.db

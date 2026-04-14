@@ -1,0 +1,84 @@
+<idea-plugin>
+    <id>com.forgecode.idea</id>
+    <name>Forge Code</name>
+    <version>1.0.0</version>
+    <vendor email="support@forgecode.dev" url="https://github.com/forgecode">ForgeCode</vendor>
+
+    <description><![CDATA[
+        <b>Forge Code</b> — 锻造每一行代码<br/><br/>
+        AI 编程助手，聚合国内外 16+ 主流大模型，在 IDE 内自由切换。<br/><br/>
+        <b>核心功能：</b>
+        <ul>
+            <li>🔥 AI 聊天面板 — 对话式编程，边聊边写</li>
+            <li>⚡ 一键切换模型 — DeepSeek / GPT / Claude / Qwen / GLM 等</li>
+            <li>🛠️ 代码操作 — 解释、优化、审查、生成测试</li>
+            <li>📋 代码 Apply — AI 修改直接写入文件</li>
+        </ul>
+        <b>支持模型：</b>DeepSeek、通义千问、智谱GLM、Kimi、MiniMax、文心一言、
+        豆包、OpenAI GPT、Anthropic Claude、Google Gemini、Mistral、Groq、xAI Grok 等
+    ]]></description>
+
+    <!-- 依赖 IntelliJ Platform 基础模块 -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+
+        <!-- ===== 侧边栏聊天窗口 ===== -->
+        <toolWindow
+                id="Forge Code"
+                anchor="right"
+                secondary="false"
+                canCloseContents="false"
+                factoryClass="com.forgecode.plugin.idea.toolwindow.ForgeToolWindowFactory"
+                icon="/icons/forge_13.svg"/>
+
+        <!-- ===== 底部状态栏模型切换 Widget ===== -->
+        <statusBarWidgetFactory
+                id="ForgeModelStatusBar"
+                implementation="com.forgecode.plugin.idea.statusbar.ModelStatusBarFactory"
+                order="first"/>
+
+        <!-- ===== 设置页（File → Settings → Tools → Forge Code）===== -->
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.forgecode.plugin.idea.settings.ForgeSettingsConfigurable"
+                id="com.forgecode.idea.settings"
+                displayName="Forge Code"/>
+
+        <!-- ===== 持久化设置存储 ===== -->
+        <applicationService
+                serviceImplementation="com.forgecode.plugin.idea.settings.ForgeSettings"/>
+
+        <!-- ===== 后端通信服务（应用级单例）===== -->
+        <applicationService
+                serviceImplementation="com.forgecode.plugin.idea.service.BackendService"/>
+
+    </extensions>
+
+    <actions>
+        <!-- ===== 编辑器右键菜单 ===== -->
+        <group id="ForgeCode.EditorMenu" text="Forge Code" description="Forge Code AI 操作" popup="true">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <separator/>
+            <action id="ForgeCode.ExplainCode"
+                    class="com.forgecode.plugin.idea.actions.ExplainCodeAction"
+                    text="✨ 解释代码"
+                    description="让 AI 解释选中的代码"/>
+            <action id="ForgeCode.OptimizeCode"
+                    class="com.forgecode.plugin.idea.actions.OptimizeCodeAction"
+                    text="⚡ 优化代码"
+                    description="让 AI 优化选中的代码"/>
+            <action id="ForgeCode.ReviewCode"
+                    class="com.forgecode.plugin.idea.actions.ReviewCodeAction"
+                    text="🔍 审查代码"
+                    description="让 AI 审查选中的代码，找出潜在问题"/>
+            <action id="ForgeCode.GenerateTest"
+                    class="com.forgecode.plugin.idea.actions.GenerateTestAction"
+                    text="🧪 生成单元测试"
+                    description="让 AI 为选中的代码生成单元测试"/>
+            <separator/>
+        </group>
+    </actions>
+
+</idea-plugin>
