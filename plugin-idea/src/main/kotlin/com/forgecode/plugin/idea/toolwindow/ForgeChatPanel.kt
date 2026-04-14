@@ -201,9 +201,11 @@ class ForgeChatPanel(private val project: Project) {
                 "readFileCtx"    -> handleReadFileCtx(json)
                 "applyCode"      -> handleApplyCode(json)
                 "openSettings"   -> handleOpenSettings()
-                "runAgent"       -> handleRunAgent(json)
-                "generatePlan"   -> handleGeneratePlan(json)
-                "executePlan"    -> handleExecutePlan(json)
+                "runAgent"          -> handleRunAgent(json)
+                "generatePlan"      -> handleGeneratePlan(json)
+                "executePlan"       -> handleExecutePlan(json)
+                "getChangedFiles"   -> handleGetChangedFiles()
+                "reviewCode"        -> handleReviewCode(json)
                 else -> log.warn("未知 JS 消息类型: $type")
             }
         } catch (e: Exception) {
@@ -571,6 +573,61 @@ class ForgeChatPanel(private val project: Project) {
                 executeJS("window.onError && window.onError(\"$msg\")")
             }
         )
+    }
+
+    /** 获取 Git 变更文件列表，返回给前端 */
+    private fun handleGetChangedFiles() {
+        com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread {
+            val files = com.forgecode.plugin.idea.review.ReviewService.getChangedFiles(project)
+            val jsonList = gson.toJson(files)
+            executeJS("window.onChangedFiles && window.onChangedFiles($jsonList)")
+        }
+    }
+
+    /** 触发 AI 代码审查 */
+    private fun handleReviewCode(json: Map<*, *>) {
+        @Suppress("UNCHECKED_CAST")
+        val filePaths = (json["files"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+        val stagedRaw = json["staged"] as? Boolean ?: false
+
+        com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread {
+            // 1. 获取 diff 内容
+            val diff = if (filePaths.isEmpty()) {
+                // 没有指定文件，自动判断 staged / unstaged
+                val staged = com.forgecode.plugin.idea.review.ReviewService
+                    .getChangedFiles(project).isNotEmpty()
+                com.forgecode.plugin.idea.review.ReviewService.getDiff(
+                    project,
+                    emptyList(),
+                    staged = staged
+                )
+            } else {
+                com.forgecode.plugin.idea.review.ReviewService.getDiff(
+                    project, filePaths, stagedRaw
+                )
+            }
+
+            // 2. 通知前端 review 开始（显示 streaming UI）
+            executeJS("window.onReviewStart && window.onReviewStart()")
+
+            // 3. 调用 AI 审查
+            com.forgecode.plugin.idea.review.ReviewService.reviewCode(
+                diff = diff,
+                projectName = project.name,
+                onToken = { token ->
+                    val b64 = java.util.Base64.getEncoder()
+                        .encodeToString(token.toByteArray(Charsets.UTF_8))
+                    executeJS("window.onReviewToken && window.onReviewToken('$b64')")
+                },
+                onDone = {
+                    executeJS("window.onReviewDone && window.onReviewDone()")
+                },
+                onError = { ex ->
+                    val msg = (ex.message ?: "审查失败").replace("\"", "\\\"").replace("\n", "\\n")
+                    executeJS("window.onReviewError && window.onReviewError(\"$msg\")")
+                }
+            )
+        }
     }
 
     // ==================== 工具方法 ====================

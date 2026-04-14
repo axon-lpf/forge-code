@@ -15,8 +15,11 @@ class ForgeToolWindowFactory : ToolWindowFactory, DumbAware {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val chatPanel = ForgeChatPanel(project)
+        val component = chatPanel.getComponent()
+        // 存储 panel 引用，供 EditorUtil.sendMessageToChat 通过 getClientProperty 查找
+        component.putClientProperty("forgeChatPanel", chatPanel)
         val content = ContentFactory.getInstance()
-            .createContent(chatPanel.getComponent(), "", false)
+            .createContent(component, "", false)
         toolWindow.contentManager.addContent(content)
     }
 

@@ -966,6 +966,10 @@ function switchTab(tab) {
     document.querySelectorAll('.main-content').forEach(c => c.style.display = 'none');
     event.target.classList.add('active');
     document.getElementById('tab-' + tab).style.display = 'flex';
+    // 切换到 Review Tab 时自动加载文件
+    if (tab === 'review' && reviewState.files.length === 0) {
+        reviewLoadFiles();
+    }
 }
 
 // ==================== 模型选择 ====================
@@ -1375,3 +1379,210 @@ document.addEventListener('DOMContentLoaded', function() {
     // 默认显示 vibe 场景，隐藏 spec 场景
     selectMode('vibe');
 });
+
+
+// ==================== Review Tab ====================
+
+/** Review Tab 状态 */
+const reviewState = {
+    files: [],          // ChangedFile[]
+    selectedPaths: [],  // 已勾选文件路径
+    reviewBuffer: '',   // 累积的审查 Markdown 内容
+    isReviewing: false
+};
+
+/** 加载 Git 变更文件列表 */
+function reviewLoadFiles() {
+    const btn = document.getElementById('review-refresh-btn');
+    btn.classList.add('loading');
+    btn.disabled = true;
+    bridge.send({ type: 'getChangedFiles' });
+}
+
+/** Kotlin 回调：文件列表返回 */
+window.onChangedFiles = function(files) {
+    reviewState.files = files || [];
+    const btn = document.getElementById('review-refresh-btn');
+    btn.classList.remove('loading');
+    btn.disabled = false;
+    renderReviewFileList();
+};
+
+/** 渲染文件列表 */
+function renderReviewFileList() {
+    const listEl = document.getElementById('review-file-list');
+    listEl.innerHTML = '';
+
+    if (reviewState.files.length === 0) {
+        listEl.innerHTML = `
+            <div class="review-empty">
+                <div style="font-size:32px;margin-bottom:8px">✅</div>
+                <div>没有检测到 Git 变更文件</div>
+                <div style="color:var(--text-muted);margin-top:4px;font-size:11px">请确认是否有 staged 或未提交的修改</div>
+            </div>`;
+        document.getElementById('review-start-btn').disabled = true;
+        document.getElementById('review-select-all').checked = false;
+        return;
+    }
+
+    reviewState.files.forEach(file => {
+        const item = document.createElement('div');
+        item.className = 'review-file-item';
+        item.dataset.path = file.path;
+
+        const addSign = file.additions > 0 ? `<span class="add">+${file.additions}</span>` : '';
+        const delSign = file.deletions > 0 ? `<span class="del">-${file.deletions}</span>` : '';
+
+        item.innerHTML = `
+            <input type="checkbox" class="review-file-cb" data-path="${escapeHtml(file.path)}" checked>
+            <span class="review-file-status ${file.status}">${file.status}</span>
+            <span class="review-file-path" title="${escapeHtml(file.path)}">${escapeHtml(file.path)}</span>
+            <span class="review-file-lines">${addSign}${delSign}</span>
+        `;
+
+        item.querySelector('.review-file-cb').addEventListener('change', () => {
+            syncReviewSelection();
+        });
+
+        item.addEventListener('click', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+            const cb = item.querySelector('.review-file-cb');
+            cb.checked = !cb.checked;
+            syncReviewSelection();
+        });
+
+        listEl.appendChild(item);
+    });
+
+    // 默认全选
+    syncReviewSelection();
+    document.getElementById('review-select-all').checked = true;
+}
+
+/** 全选/取消全选 */
+function reviewToggleAll(checked) {
+    document.querySelectorAll('.review-file-cb').forEach(cb => { cb.checked = checked; });
+    syncReviewSelection();
+}
+
+/** 同步 selectedPaths 并更新开始按钮 */
+function syncReviewSelection() {
+    reviewState.selectedPaths = Array.from(document.querySelectorAll('.review-file-cb:checked'))
+        .map(cb => cb.dataset.path);
+    document.getElementById('review-start-btn').disabled = reviewState.selectedPaths.length === 0;
+
+    // 更新全选 checkbox 状态
+    const total = document.querySelectorAll('.review-file-cb').length;
+    const selected = reviewState.selectedPaths.length;
+    const selectAllCb = document.getElementById('review-select-all');
+    selectAllCb.indeterminate = selected > 0 && selected < total;
+    selectAllCb.checked = selected === total;
+}
+
+/** 点击「开始审查」 */
+function reviewStart() {
+    if (reviewState.isReviewing) return;
+    if (reviewState.selectedPaths.length === 0) return;
+
+    reviewState.isReviewing = true;
+    reviewState.reviewBuffer = '';
+
+    // 显示结果区
+    const divider = document.getElementById('review-divider');
+    const resultArea = document.getElementById('review-result-area');
+    divider.style.display = 'block';
+    resultArea.style.display = 'flex';
+
+    // 重置内容
+    document.getElementById('review-markdown').innerHTML = '';
+    document.getElementById('review-thinking').style.display = 'flex';
+    document.getElementById('review-result-status').textContent = '🔍 AI 审查中...';
+    document.getElementById('review-start-btn').disabled = true;
+    document.getElementById('review-start-btn').textContent = '审查中...';
+
+    // 滚动到结果区
+    resultArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    bridge.send({
+        type: 'reviewCode',
+        files: reviewState.selectedPaths,
+        staged: false
+    });
+}
+
+/** Kotlin 回调：审查开始 */
+window.onReviewStart = function() {
+    // 已在 reviewStart() 中处理 UI，这里无需重复
+};
+
+/** Kotlin 回调：流式 token（Base64 编码） */
+window.onReviewToken = function(b64) {
+    const token = decodeURIComponent(escape(atob(b64)));
+    reviewState.reviewBuffer += token;
+
+    // 隐藏 thinking
+    document.getElementById('review-thinking').style.display = 'none';
+
+    // 实时 Markdown 渲染
+    const mdEl = document.getElementById('review-markdown');
+    if (typeof marked !== 'undefined') {
+        mdEl.innerHTML = marked.parse(reviewState.reviewBuffer);
+    } else {
+        mdEl.textContent = reviewState.reviewBuffer;
+    }
+
+    // 保持滚动到底
+    const content = document.getElementById('review-result-content');
+    content.scrollTop = content.scrollHeight;
+};
+
+/** Kotlin 回调：审查完成 */
+window.onReviewDone = function() {
+    reviewState.isReviewing = false;
+    document.getElementById('review-thinking').style.display = 'none';
+    document.getElementById('review-result-status').textContent = '✅ 审查完成';
+    document.getElementById('review-start-btn').disabled = false;
+    document.getElementById('review-start-btn').innerHTML = '🔍 重新审查';
+
+    // 最终完整渲染（添加代码块复制按钮）
+    const mdEl = document.getElementById('review-markdown');
+    if (typeof marked !== 'undefined') {
+        mdEl.innerHTML = marked.parse(reviewState.reviewBuffer);
+        // 为代码块添加复制按钮
+        mdEl.querySelectorAll('pre').forEach(pre => {
+            const btn = document.createElement('button');
+            btn.className = 'review-copy-btn';
+            btn.style.cssText = 'position:absolute;top:6px;right:8px;font-size:10px;padding:2px 6px;';
+            btn.textContent = '复制';
+            btn.onclick = () => {
+                navigator.clipboard.writeText(pre.querySelector('code')?.textContent || '');
+                btn.textContent = '已复制';
+                setTimeout(() => { btn.textContent = '复制'; }, 2000);
+            };
+            pre.style.position = 'relative';
+            pre.appendChild(btn);
+        });
+    }
+};
+
+/** Kotlin 回调：审查出错 */
+window.onReviewError = function(message) {
+    reviewState.isReviewing = false;
+    document.getElementById('review-thinking').style.display = 'none';
+    document.getElementById('review-result-status').textContent = '❌ 审查失败';
+    document.getElementById('review-markdown').innerHTML =
+        `<div style="color:#ef4444;padding:10px 0">${escapeHtml(message)}</div>`;
+    document.getElementById('review-start-btn').disabled = false;
+    document.getElementById('review-start-btn').innerHTML = '🔍 重试审查';
+};
+
+/** 复制审查结果 */
+function reviewCopyResult() {
+    if (!reviewState.reviewBuffer) return;
+    navigator.clipboard.writeText(reviewState.reviewBuffer).then(() => {
+        const btn = document.querySelector('.review-copy-btn');
+        const orig = btn.innerHTML;
+        btn.innerHTML = '✅ 已复制';
+        setTimeout(() => { btn.innerHTML = orig; }, 2000);
+    });
+}

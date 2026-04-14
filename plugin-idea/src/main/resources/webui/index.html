@@ -105,12 +105,48 @@
 
 </div>
 
-<!-- Review Tab（预留） -->
-<div class="main-content" id="tab-review" style="display:none">
-    <div class="welcome">
-        <div class="welcome-logo">🔍</div>
-        <div class="welcome-title">Code Review</div>
-        <div class="welcome-sub">代码审查功能即将上线</div>
+<!-- Review Tab -->
+        <div class="main-content" id="tab-review" style="display:none; flex-direction:column;">
+
+    <!-- 顶部工具栏 -->
+    <div class="review-toolbar">
+        <button class="review-btn-refresh" id="review-refresh-btn" onclick="reviewLoadFiles()" title="刷新变更文件">
+            <span id="review-refresh-icon">↻</span> 刷新
+        </button>
+        <label class="review-select-all-label">
+            <input type="checkbox" id="review-select-all" onchange="reviewToggleAll(this.checked)"> 全选
+        </label>
+        <div style="flex:1"></div>
+        <button class="review-btn-primary" id="review-start-btn" onclick="reviewStart()" disabled>
+            🔍 开始审查
+        </button>
+    </div>
+
+    <!-- 变更文件列表 -->
+    <div class="review-file-list" id="review-file-list">
+        <div class="review-empty" id="review-empty-hint">
+            <div style="font-size:32px;margin-bottom:8px">📂</div>
+            <div>点击「刷新」加载 Git 变更文件</div>
+        </div>
+    </div>
+
+    <!-- 分隔线 -->
+    <div class="review-divider" id="review-divider" style="display:none"></div>
+
+    <!-- 审查结果区 -->
+    <div class="review-result-area" id="review-result-area" style="display:none">
+        <!-- 状态栏 -->
+        <div class="review-result-header">
+            <span id="review-result-status">审查结果</span>
+            <button class="review-copy-btn" onclick="reviewCopyResult()" title="复制结果">⎘ 复制</button>
+        </div>
+        <!-- 流式内容 -->
+        <div class="review-result-content" id="review-result-content">
+            <div class="review-thinking" id="review-thinking" style="display:none">
+                <span class="review-spinner"></span> AI 正在审查代码...
+            </div>
+            <div class="review-markdown" id="review-markdown"></div>
+        </div>
     </div>
 </div>
 
