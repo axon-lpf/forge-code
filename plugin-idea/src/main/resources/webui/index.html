@@ -8,10 +8,29 @@
 </head>
 <body>
 
+<!-- ===== 会话历史侧边栏 ===== -->
+<div class="sessions-overlay" id="sessions-overlay" onclick="closeSessions()"></div>
+<div class="sessions-sidebar" id="sessions-sidebar">
+    <div class="sessions-header">
+        <span class="sessions-title">历史会话</span>
+        <button class="icon-btn" onclick="closeSessions()">✕</button>
+    </div>
+    <div class="sessions-search">
+        <input type="text" id="sessions-search-input" placeholder="搜索会话..." oninput="filterSessions(this.value)">
+    </div>
+    <div class="sessions-list" id="sessions-list">
+        <div class="sessions-empty">暂无历史会话</div>
+    </div>
+    <div class="sessions-footer">
+        <button class="sessions-new-btn" onclick="newSession()">＋ 新建会话</button>
+    </div>
+</div>
+
 <!-- ===== 顶部工具栏 ===== -->
 <div class="toolbar">
     <span class="toolbar-title">🔥 Forge Code</span>
     <div class="toolbar-actions">
+        <button class="icon-btn" onclick="openSessions()" title="历史会话">🕐</button>
         <button class="icon-btn" onclick="newSession()" title="新建会话">＋</button>
         <button class="icon-btn" onclick="openSettings()" title="设置">⚙</button>
     </div>
@@ -80,15 +99,28 @@
     </div>
 </div>
 
+<!-- ===== @文件搜索弹窗 ===== -->
+<div class="file-picker" id="file-picker" style="display:none">
+    <div class="file-picker-search">
+        <span class="file-picker-at">@</span>
+        <input type="text" id="file-picker-input" placeholder="搜索文件..." autocomplete="off">
+    </div>
+    <div class="file-picker-list" id="file-picker-list">
+        <div class="file-picker-empty">输入关键词搜索项目文件</div>
+    </div>
+</div>
+
 <!-- ===== 底部输入区 ===== -->
 <div class="input-area">
+    <!-- @引用标签栏（有引用时显示） -->
+    <div class="ctx-tags" id="ctx-tags" style="display:none"></div>
     <div class="input-box">
         <textarea
             id="user-input"
-            placeholder="输入消息... (Shift+Enter 换行，Enter 发送)"
-            rows="1"
+            placeholder="输入消息... (@引用文件，Shift+Enter 换行，Enter 发送)"
+            rows="3"
             onkeydown="handleKeyDown(event)"
-            oninput="autoResize(this)">
+            oninput="onInputChange(event)">
         </textarea>
         <button class="send-btn" id="send-btn" onclick="sendMessage()">▶</button>
         <button class="stop-btn" id="stop-btn" onclick="cancelMessage()" style="display:none">■</button>
@@ -105,6 +137,13 @@
         </div>
     </div>
 </div>
+
+<!-- ===== 模型选择弹出列表 ===== -->
+<div class="model-dropdown" id="model-dropdown" style="display:none">
+    <div class="model-dropdown-header">选择模型</div>
+    <div class="model-dropdown-list" id="model-dropdown-list"></div>
+</div>
+<div class="model-dropdown-overlay" id="model-dropdown-overlay" style="display:none" onclick="closeModelDropdown()"></div>
 
 <!-- ===== 离线提示 ===== -->
 <div class="offline-banner" id="offline-banner" style="display:none">

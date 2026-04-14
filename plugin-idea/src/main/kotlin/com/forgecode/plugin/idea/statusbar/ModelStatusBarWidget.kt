@@ -1,6 +1,6 @@
 package com.forgecode.plugin.idea.statusbar
 
-import com.forgecode.plugin.idea.service.BackendService
+import com.forgecode.plugin.idea.service.LlmService
 import com.forgecode.plugin.idea.toolwindow.ModelChangedListener
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
@@ -46,7 +46,7 @@ class ModelStatusBarWidget(project: Project) :
     }
 
     private val log = logger<ModelStatusBarWidget>()
-    private val backendService = BackendService.getInstance()
+    private val llmService = LlmService.getInstance()
 
     /** 当前显示的文字 */
     private var displayText: String = "⚡ Forge Code"
@@ -79,13 +79,13 @@ class ModelStatusBarWidget(project: Project) :
     }
 
     /**
-     * 从后端获取当前激活模型并刷新显示
+     * 获取当前激活模型并刷新显示
      */
     fun refreshCurrentModel() {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val health = backendService.healthCheck()
-            val provider = health?.activeProvider ?: ""
-            val model = health?.activeModel ?: ""
+            val activeInfo = llmService.getActiveInfo()
+            val provider = activeInfo.provider ?: ""
+            val model = activeInfo.model ?: ""
             ApplicationManager.getApplication().invokeLater {
                 updateDisplay(provider, model)
             }
@@ -106,17 +106,14 @@ class ModelStatusBarWidget(project: Project) :
      */
     private fun showModelPicker(event: MouseEvent) {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val modelsResp = backendService.getModels() ?: run {
-                log.warn("获取模型列表失败，后端可能未启动")
-                return@executeOnPooledThread
-            }
+            val providerList = llmService.getProviderList()
 
             // 构建分组的展示项
             val items = mutableListOf<ModelItem>()
 
-            val cnProviders = modelsResp.providers.filter { it.region == "cn" && it.hasApiKey }
-            val globalProviders = modelsResp.providers.filter { it.region == "global" && it.hasApiKey }
-            val unconfigured = modelsResp.providers.filter { !it.hasApiKey }
+            val cnProviders = providerList.filter { it.region == "cn" && it.hasApiKey }
+            val globalProviders = providerList.filter { it.region == "global" && it.hasApiKey }
+            val unconfigured = providerList.filter { !it.hasApiKey }
 
             if (cnProviders.isNotEmpty()) {
                 items.add(ModelItem.Header("🇨🇳 国内模型"))
@@ -174,10 +171,11 @@ class ModelStatusBarWidget(project: Project) :
 
     private fun doSwitchModel(provider: String, model: String) {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = backendService.switchModel(provider, model)
-            if (result?.success == true) {
+            val success = llmService.switchModel(provider, model)
+            if (success) {
+                val activeInfo = llmService.getActiveInfo()
                 ApplicationManager.getApplication().invokeLater {
-                    updateDisplay(result.activeProvider ?: provider, result.activeModel ?: model)
+                    updateDisplay(activeInfo.provider ?: provider, activeInfo.model ?: model)
                 }
             }
         }

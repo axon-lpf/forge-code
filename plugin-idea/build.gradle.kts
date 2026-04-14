@@ -31,8 +31,8 @@ dependencies {
 
 // IntelliJ 插件配置
 intellij {
-    // 直接使用本地安装的 IDEA，无需从网络下载
-    localPath.set("D:/Program Files/JetBrains/IntelliJ IDEA Community Edition 2023.1.2")
+    // 使用版本号自动下载 IntelliJ Platform SDK
+    version.set(providers.gradleProperty("platformVersion").get())
     type.set(providers.gradleProperty("platformType").get())
     // 不依赖额外插件
     plugins.set(listOf())

@@ -50,15 +50,20 @@
         <applicationService
                 serviceImplementation="com.forgecode.plugin.idea.settings.ForgeSettings"/>
 
-        <!-- ===== 后端通信服务（应用级单例）===== -->
+        <!-- ===== LLM 服务（应用级单例，直接调用内置 Provider）===== -->
         <applicationService
-                serviceImplementation="com.forgecode.plugin.idea.service.BackendService"/>
+                serviceImplementation="com.forgecode.plugin.idea.service.LlmService"/>
+
+        <!-- ===== 行内代码补全 Provider ===== -->
+        <inlineCompletion.provider
+                implementation="com.forgecode.plugin.idea.completion.ForgeInlineCompletionProvider"/>
 
     </extensions>
 
     <actions>
         <!-- ===== 编辑器右键菜单 ===== -->
-        <group id="ForgeCode.EditorMenu" text="Forge Code" description="Forge Code AI 操作" popup="true">
+        <group id="ForgeCode.EditorMenu" text="Forge Code" description="Forge Code AI 操作" popup="true"
+               icon="/icons/forge_16.svg">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <separator/>
             <action id="ForgeCode.ExplainCode"

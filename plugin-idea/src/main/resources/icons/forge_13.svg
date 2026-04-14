@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 13 13">
+  <!-- Forge Code 插件图标 13x13 — 火焰/锤子风格 -->
+  <defs>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#FF6B35"/>
+      <stop offset="100%" stop-color="#FFD700"/>
+    </linearGradient>
+  </defs>
+  <!-- 火焰主体 -->
+  <path d="M6.5 1C6.5 1 4 4 4 6.5C4 7.5 4.5 8.5 5.5 9C5 8 5.5 7 6.5 6.5C6.5 7.5 7 8.5 7 9.5C8.5 9 9 7.5 9 6.5C9 4 6.5 1 6.5 1Z" 
+        fill="url(#flame)"/>
+  <!-- 底座 -->
+  <rect x="4" y="10" width="5" height="1.5" rx="0.5" fill="#7C4DFF"/>
+</svg>

@@ -1,6 +1,7 @@
 package com.forgecode.plugin.idea.toolwindow
 
-import com.forgecode.plugin.idea.service.BackendService
+import com.forgecode.plugin.idea.service.LlmService
+import com.forgecode.plugin.idea.service.SessionManager
 import com.forgecode.plugin.idea.settings.ForgeSettings
 import com.google.gson.Gson
 import com.intellij.openapi.application.ApplicationManager
@@ -29,7 +30,7 @@ class ForgeChatPanel(private val project: Project) {
 
     private val log = logger<ForgeChatPanel>()
     private val gson = Gson()
-    private val backendService = BackendService.getInstance()
+    private val llmService = LlmService.getInstance()
 
     /** 根容器 */
     private val rootPanel = JPanel(BorderLayout())
@@ -42,6 +43,12 @@ class ForgeChatPanel(private val project: Project) {
 
     /** 当前正在进行的 SSE EventSource（用于取消） */
     private var currentEventSource: okhttp3.sse.EventSource? = null
+
+    /** 当前会话 ID */
+    private var currentSessionId: String? = null
+
+    /** 当前 AI 回复的 buffer（流结束后保存到会话） */
+    private val currentAiBuffer = StringBuilder()
 
     init {
         if (JBCefApp.isSupported()) {
@@ -146,15 +153,15 @@ class ForgeChatPanel(private val project: Project) {
      */
     private fun loadInitialData() {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val health = backendService.healthCheck()
-            val models = backendService.getModels()
+            val activeInfo = llmService.getActiveInfo()
+            val providers = llmService.getProviderList()
             val settings = ForgeSettings.getInstance()
 
             val initData = mapOf(
-                "backendOnline" to (health != null),
-                "activeProvider" to (health?.activeProvider ?: ""),
-                "activeModel" to (health?.activeModel ?: ""),
-                "models" to (models?.providers ?: emptyList<Any>()),
+                "backendOnline" to true,  // 内置 Provider，始终在线
+                "activeProvider" to (activeInfo.provider ?: ""),
+                "activeModel" to (activeInfo.model ?: ""),
+                "models" to providers,
                 "theme" to settings.theme,
                 "language" to settings.language,
                 "defaultMode" to settings.defaultMode,
@@ -178,13 +185,19 @@ class ForgeChatPanel(private val project: Project) {
             log.debug("收到 JS 消息: type=$type")
 
             when (type) {
-                "sendMessage" -> handleSendMessage(json)
+                "sendMessage"   -> handleSendMessage(json)
                 "cancelMessage" -> handleCancelMessage()
-                "switchModel" -> handleSwitchModel(json)
-                "getModels" -> handleGetModels()
-                "newSession" -> handleNewSession()
-                "applyCode" -> handleApplyCode(json)
-                "openSettings" -> handleOpenSettings()
+                "switchModel"   -> handleSwitchModel(json)
+                "getModels"     -> handleGetModels()
+                "newSession"    -> handleNewSession()
+                "loadSession"   -> handleLoadSession(json)
+                "deleteSession" -> handleDeleteSession(json)
+                "renameSession" -> handleRenameSession(json)
+                "getSessions"   -> handleGetSessions()
+                "searchFiles"   -> handleSearchFiles(json)
+                "readFileCtx"   -> handleReadFileCtx(json)
+                "applyCode"     -> handleApplyCode(json)
+                "openSettings"  -> handleOpenSettings()
                 else -> log.warn("未知 JS 消息类型: $type")
             }
         } catch (e: Exception) {
@@ -192,29 +205,41 @@ class ForgeChatPanel(private val project: Project) {
         }
     }
 
-    /** 处理发送消息（流式对话） */
+    /** 处理发送消息（流式对话，带会话持久化） */
     private fun handleSendMessage(json: Map<*, *>) {
         val content = json["content"] as? String ?: return
-        val sessionId = json["sessionId"] as? String
+        val jsSessionId = json["sessionId"] as? String
 
         // 取消上一个未完成的流
         currentEventSource?.cancel()
 
-        val messages = listOf(
-            BackendService.ChatMessage("user", content)
-        )
-        val request = BackendService.ChatRequest(
-            sessionId = sessionId,
-            messages = messages
-        )
+        // 确定当前会话：JS 提供 sessionId 则用，否则创建/复用 Kotlin 端维护的会话
+        val activeInfo = llmService.getActiveInfo()
+        val sid = jsSessionId?.takeIf { it.isNotBlank() }
+            ?: currentSessionId
+            ?: run {
+                val s = SessionManager.createSession(
+                    provider = activeInfo.provider ?: "",
+                    model = activeInfo.model ?: ""
+                )
+                currentSessionId = s.id
+                s.id
+            }
+        currentSessionId = sid
 
-        // 通知 JS 开始流式输出
-        executeJS("window.onStreamStart && window.onStreamStart()")
+        // 保存用户消息
+        SessionManager.appendMessage(sid, "user", content)
 
-        currentEventSource = backendService.chat(
-            chatRequest = request,
+        // 构建完整历史消息（含本次）
+        val messages = SessionManager.getMessages(sid)
+
+        // 重置 AI buffer
+        currentAiBuffer.clear()
+
+        llmService.chatStream(
+            messages = messages,
             onToken = { token ->
-                // 转义反引号和反斜杠，避免 JS 语法错误
+                currentAiBuffer.append(token)
                 val escaped = token
                     .replace("\\", "\\\\")
                     .replace("`", "\\`")
@@ -222,12 +247,32 @@ class ForgeChatPanel(private val project: Project) {
                 executeJS("window.appendToken && window.appendToken(`$escaped`)")
             },
             onDone = {
+                // 流结束：保存 AI 回复到会话
+                val aiContent = currentAiBuffer.toString()
+                if (aiContent.isNotBlank()) {
+                    SessionManager.appendMessage(sid, "assistant", aiContent)
+                }
+                currentAiBuffer.clear()
+                // 通知 JS 更新会话标题
+                val summary = SessionManager.listSessions().find { it.id == sid }
+                if (summary != null) {
+                    val titleEscaped = summary.title.replace("\"", "\\\"")
+                    executeJS("window.onSessionTitleUpdate && window.onSessionTitleUpdate(\"$sid\", \"$titleEscaped\")")
+                }
                 executeJS("window.onStreamDone && window.onStreamDone()")
             },
             onError = { ex ->
+                currentAiBuffer.clear()
                 val msg = (ex.message ?: "未知错误")
                     .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
                 executeJS("window.onError && window.onError(\"$msg\")")
+            },
+            onAutoRetry = { failedProvider, newProvider, newModel ->
+                val failedDisplay = failedProvider.replace("\"", "\\\"")
+                val newDisplay = newProvider.replace("\"", "\\\"")
+                val modelDisplay = newModel.replace("\"", "\\\"")
+                executeJS("window.onAutoRetry && window.onAutoRetry(\"$failedDisplay\", \"$newDisplay\", \"$modelDisplay\")")
             }
         )
     }
@@ -236,6 +281,13 @@ class ForgeChatPanel(private val project: Project) {
     private fun handleCancelMessage() {
         currentEventSource?.cancel()
         currentEventSource = null
+        // 若有部分回复也保存
+        val aiContent = currentAiBuffer.toString()
+        val sid = currentSessionId
+        if (sid != null && aiContent.isNotBlank()) {
+            SessionManager.appendMessage(sid, "assistant", aiContent + " *(已取消)*")
+        }
+        currentAiBuffer.clear()
         executeJS("window.onStreamDone && window.onStreamDone()")
     }
 
@@ -244,16 +296,20 @@ class ForgeChatPanel(private val project: Project) {
         val provider = json["provider"] as? String ?: return
         val model = json["model"] as? String ?: return
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = backendService.switchModel(provider, model)
-            if (result?.success == true) {
+            val success = llmService.switchModel(provider, model)
+            if (success) {
+                val activeInfo = llmService.getActiveInfo()
+                // 更新当前会话的模型记录
+                currentSessionId?.let {
+                    SessionManager.updateSessionModel(it, activeInfo.provider ?: "", activeInfo.model ?: "")
+                }
                 executeJS(
                     "window.onModelSwitched && window.onModelSwitched(" +
-                            "\"${result.activeProvider}\", \"${result.activeModel}\")"
+                            "\"${activeInfo.provider}\", \"${activeInfo.model}\")"
                 )
-                // 通知状态栏刷新
                 ApplicationManager.getApplication().invokeLater {
                     project.messageBus.syncPublisher(ModelChangedListener.TOPIC)
-                        .onModelChanged(result.activeProvider ?: "", result.activeModel ?: "")
+                        .onModelChanged(activeInfo.provider ?: "", activeInfo.model ?: "")
                 }
             }
         }
@@ -262,23 +318,119 @@ class ForgeChatPanel(private val project: Project) {
     /** 获取模型列表 */
     private fun handleGetModels() {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val models = backendService.getModels()
-            executeJS("window.updateModels && window.updateModels(${gson.toJson(models)})")
+            val providers = llmService.getProviderList()
+            val activeInfo = llmService.getActiveInfo()
+            val response = mapOf(
+                "activeProvider" to activeInfo.provider,
+                "activeModel" to activeInfo.model,
+                "providers" to providers
+            )
+            executeJS("window.updateModels && window.updateModels(${gson.toJson(response)})")
         }
     }
 
     /** 新建会话 */
     private fun handleNewSession() {
-        executeJS("window.onNewSession && window.onNewSession()")
+        val activeInfo = llmService.getActiveInfo()
+        val session = SessionManager.createSession(
+            provider = activeInfo.provider ?: "",
+            model = activeInfo.model ?: ""
+        )
+        currentSessionId = session.id
+        currentAiBuffer.clear()
+        executeJS("window.onNewSession && window.onNewSession(${gson.toJson(mapOf("sessionId" to session.id))})")
     }
 
-    /** 将 AI 生成的代码应用到编辑器 */
+    /** 加载指定会话（切换会话） */
+    private fun handleLoadSession(json: Map<*, *>) {
+        val sessionId = json["sessionId"] as? String ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val session = SessionManager.loadSession(sessionId) ?: return@executeOnPooledThread
+            currentSessionId = sessionId
+            currentAiBuffer.clear()
+            // 构建消息列表供 JS 渲染
+            val messagesJson = session.messages.map {
+                mapOf("role" to it.role, "content" to it.content, "timestamp" to it.timestamp)
+            }
+            val response = mapOf(
+                "sessionId" to session.id,
+                "title" to session.title,
+                "provider" to session.provider,
+                "model" to session.model,
+                "messages" to messagesJson
+            )
+            executeJS("window.onSessionLoaded && window.onSessionLoaded(${gson.toJson(response)})")
+        }
+    }
+
+    /** 删除会话 */
+    private fun handleDeleteSession(json: Map<*, *>) {
+        val sessionId = json["sessionId"] as? String ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            SessionManager.deleteSession(sessionId)
+            if (currentSessionId == sessionId) {
+                currentSessionId = null
+            }
+            // 重新推送会话列表
+            pushSessionList()
+        }
+    }
+
+    /** 重命名会话 */
+    private fun handleRenameSession(json: Map<*, *>) {
+        val sessionId = json["sessionId"] as? String ?: return
+        val title = json["title"] as? String ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            SessionManager.renameSession(sessionId, title)
+            pushSessionList()
+        }
+    }
+
+    /** 获取会话列表 */
+    private fun handleGetSessions() {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            pushSessionList()
+        }
+    }
+
+    /** 推送会话列表到 JS */
+    private fun pushSessionList() {
+        val sessions = SessionManager.listSessions()
+        val response = mapOf(
+            "sessions" to sessions,
+            "currentSessionId" to currentSessionId
+        )
+        executeJS("window.onSessionList && window.onSessionList(${gson.toJson(response)})")
+    }
+
+    /** 搜索项目文件（@引用触发） */
+    private fun handleSearchFiles(json: Map<*, *>) {
+        val keyword = json["keyword"] as? String ?: ""
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val results = com.forgecode.plugin.idea.service.FileContextProvider
+                .searchFiles(project, keyword, limit = 20)
+            executeJS("window.onFileSearchResult && window.onFileSearchResult(${gson.toJson(results)})")
+        }
+    }
+
+    /** 读取文件内容（JS 确认选中文件后调用） */
+    private fun handleReadFileCtx(json: Map<*, *>) {
+        val path = json["path"] as? String ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val result = com.forgecode.plugin.idea.service.FileContextProvider
+                .readFile(project, path)
+            if (result != null) {
+                executeJS("window.onFileContent && window.onFileContent(${gson.toJson(result)})")
+            }
+        }
+    }
+
+    /** 将 AI 生成的代码应用到编辑器（Diff 视图） */
     private fun handleApplyCode(json: Map<*, *>) {
         val code = json["code"] as? String ?: return
         val language = json["language"] as? String ?: ""
-        ApplicationManager.getApplication().invokeLater {
-            com.forgecode.plugin.idea.util.EditorUtil.applyCodeToEditor(project, code, language)
-        }
+        val fileName = json["fileName"] as? String
+        com.forgecode.plugin.idea.util.CodeApplyManager.applyCode(project, code, language, fileName)
     }
 
     /** 打开插件设置页 */
@@ -311,8 +463,8 @@ class ForgeChatPanel(private val project: Project) {
         font-family:sans-serif;text-align:center;">
         <div>
             <h2>🔥 Forge Code</h2>
-            <p>正在连接后端服务...</p>
-            <p style="color:#888;font-size:12px">确保 claude-api-proxy 已启动</p>
+            <p>请在 Settings → Forge Code 中配置模型 API Key</p>
+            <p style="color:#888;font-size:12px">支持 DeepSeek / GPT / Claude / Qwen 等 16+ 模型</p>
         </div>
         </body></html>
     """.trimIndent()
