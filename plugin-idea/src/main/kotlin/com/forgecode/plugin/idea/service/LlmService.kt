@@ -169,12 +169,18 @@ class LlmService {
 
         val request = buildChatRequest(messages)
 
+        // 防止 onDone 被 [DONE] 事件和 onClosed 双重触发
+        val doneCalled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val safeOnDone = {
+            if (doneCalled.compareAndSet(false, true)) onDone()
+        }
+
         // 调用 Provider 流式接口
         provider.chatCompletionStream(
             request,
             { data ->  // onEvent
                 if (data == "[DONE]") {
-                    onDone()
+                    safeOnDone()
                     return@chatCompletionStream
                 }
                 try {
@@ -184,36 +190,32 @@ class LlmService {
                     log.debug("解析 SSE chunk 失败: $data")
                 }
             },
-            { onDone() },       // onComplete
+            { safeOnDone() },   // onComplete（onClosed）
             { error ->          // onError: 自动重试一次
                 val failedName = provider.name
                 val failedError = error?.message ?: "未知错误"
                 log.warn("[$failedName] 流式对话失败: $failedError", error)
 
-                // 尝试找到下一个可用的 Provider
                 val fallback = getNextAvailableProvider(failedName)
                 if (fallback != null) {
-                    // 自动切换并重试
                     log.info("自动切换到备选模型: [${fallback.name}] ${fallback.currentModel}")
                     providerManager.switchProvider(fallback.name, fallback.currentModel)
-
-                    // 通知 UI
                     onAutoRetry?.invoke(failedName, fallback.name, fallback.currentModel)
 
-                    // 用新 Provider 重试
                     val retryRequest = buildChatRequest(messages)
+                    val retryDoneCalled = java.util.concurrent.atomic.AtomicBoolean(false)
+                    val safeRetryDone = { if (retryDoneCalled.compareAndSet(false, true)) onDone() }
                     fallback.chatCompletionStream(
                         retryRequest,
                         { data ->
-                            if (data == "[DONE]") { onDone(); return@chatCompletionStream }
+                            if (data == "[DONE]") { safeRetryDone(); return@chatCompletionStream }
                             try {
                                 val token = parseTokenFromChunk(data)
                                 if (token != null) onToken(token)
                             } catch (_: Exception) {}
                         },
-                        { onDone() },
+                        { safeRetryDone() },
                         { retryError ->
-                            // 重试也失败了，返回最终错误
                             log.error("[${fallback.name}] 重试也失败: ${retryError?.message}", retryError)
                             onError(Exception(
                                 "[$failedName] $failedError\n[${fallback.name}] 重试失败: ${retryError?.message}"
@@ -221,11 +223,44 @@ class LlmService {
                         }
                     )
                 } else {
-                    // 没有备选模型，直接报错
                     onError(Exception("[$failedName] $failedError"))
                 }
             }
         )
+    }
+
+    /**
+     * 非流式同步调用（专供 MiniMax 等不支持真正 SSE 的模型）
+     * 在后台线程执行，完成后模拟 token 逐块推送产生打字效果
+     */
+    private fun doNonStreamCall(
+        provider: com.forgecode.plugin.llm.provider.LlmProvider,
+        messages: List<Map<String, Any>>,
+        onToken: (String) -> Unit,
+        onDone: () -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        Thread {
+            try {
+                val request = buildChatRequest(messages)
+                request.stream = false
+                val response = provider.chatCompletion(request)
+                val content = response?.choices?.firstOrNull()?.message?.content
+                if (content.isNullOrBlank()) {
+                    onError(Exception("${provider.displayName} 返回空响应，请检查 API Key 是否正确"))
+                    return@Thread
+                }
+                // 分块推送，产生打字效果
+                content.chunked(8).forEach { chunk ->
+                    onToken(chunk)
+                    Thread.sleep(15)
+                }
+                onDone()
+            } catch (e: Exception) {
+                log.error("[${provider.name}] 非流式调用失败: ${e.message}", e)
+                onError(e)
+            }
+        }.start()
     }
 
     /**
@@ -366,10 +401,23 @@ class LlmService {
             val json = JsonParser.parseString(data).asJsonObject
             val choices = json.getAsJsonArray("choices") ?: return null
             if (choices.isEmpty) return null
-            val delta = choices[0].asJsonObject
-                .getAsJsonObject("delta") ?: return null
-            val content = delta.get("content")
-            if (content != null && !content.isJsonNull) content.asString else null
+            val choice = choices[0].asJsonObject
+
+            // 优先取流式的 delta.content
+            val delta = choice.getAsJsonObject("delta")
+            if (delta != null) {
+                val content = delta.get("content")
+                if (content != null && !content.isJsonNull) return content.asString
+            }
+
+            // 非流式（如 MiniMax stream=false）取 message.content
+            val message = choice.getAsJsonObject("message")
+            if (message != null) {
+                val content = message.get("content")
+                if (content != null && !content.isJsonNull) return content.asString
+            }
+
+            null
         } catch (e: Exception) {
             null
         }

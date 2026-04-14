@@ -194,10 +194,13 @@ class ForgeChatPanel(private val project: Project) {
                 "deleteSession" -> handleDeleteSession(json)
                 "renameSession" -> handleRenameSession(json)
                 "getSessions"   -> handleGetSessions()
-                "searchFiles"   -> handleSearchFiles(json)
-                "readFileCtx"   -> handleReadFileCtx(json)
-                "applyCode"     -> handleApplyCode(json)
-                "openSettings"  -> handleOpenSettings()
+                "searchFiles"    -> handleSearchFiles(json)
+                "readFileCtx"    -> handleReadFileCtx(json)
+                "applyCode"      -> handleApplyCode(json)
+                "openSettings"   -> handleOpenSettings()
+                "runAgent"       -> handleRunAgent(json)
+                "generatePlan"   -> handleGeneratePlan(json)
+                "executePlan"    -> handleExecutePlan(json)
                 else -> log.warn("未知 JS 消息类型: $type")
             }
         } catch (e: Exception) {
@@ -279,8 +282,11 @@ class ForgeChatPanel(private val project: Project) {
 
     /** 取消当前流式输出 */
     private fun handleCancelMessage() {
+        // 取消普通流式
         currentEventSource?.cancel()
         currentEventSource = null
+        // 取消 Agent 循环
+        com.forgecode.plugin.idea.agent.AgentService.cancel()
         // 若有部分回复也保存
         val aiContent = currentAiBuffer.toString()
         val sid = currentSessionId
@@ -439,6 +445,126 @@ class ForgeChatPanel(private val project: Project) {
             com.intellij.openapi.options.ShowSettingsUtil.getInstance()
                 .showSettingsDialog(project, "Forge Code")
         }
+    }
+
+    /** Agent 模式执行 */
+    private fun handleRunAgent(json: Map<*, *>) {
+        val content = json["content"] as? String ?: return
+        val sid = currentSessionId ?: run {
+            val activeInfo = llmService.getActiveInfo()
+            val s = SessionManager.createSession(activeInfo.provider ?: "", activeInfo.model ?: "")
+            currentSessionId = s.id; s.id
+        }
+        SessionManager.appendMessage(sid, "user", content)
+        val history = SessionManager.getMessages(sid)
+        currentAiBuffer.clear()
+
+        com.forgecode.plugin.idea.agent.AgentService.runAgent(
+            project = project,
+            userMessage = content,
+            sessionHistory = history,
+            onStep = { step ->
+                val stepJson = gson.toJson(mapOf(
+                    "type" to step.type.name,
+                    "content" to step.content,
+                    "toolName" to (step.toolName ?: ""),
+                    "toolResult" to (step.toolResult ?: "")
+                ))
+                executeJS("window.onAgentStep && window.onAgentStep($stepJson)")
+            },
+            onToken = { token ->
+                currentAiBuffer.append(token)
+                // 分块推送 token，每块约 8 字符，产生打字效果
+                token.chunked(8).forEach { chunk ->
+                    val escaped = chunk.replace("\\","\\\\").replace("`","\\`").replace("$","\\$")
+                    executeJS("window.appendToken && window.appendToken(`$escaped`)")
+                }
+            },
+            onDone = {
+                val aiContent = currentAiBuffer.toString()
+                if (aiContent.isNotBlank()) SessionManager.appendMessage(sid, "assistant", aiContent)
+                currentAiBuffer.clear()
+                executeJS("window.onStreamDone && window.onStreamDone()")
+            },
+            onError = { ex ->
+                currentAiBuffer.clear()
+                val msg = (ex.message ?: "未知错误").replace("\"","\\\"").replace("\n","\\n")
+                executeJS("window.onError && window.onError(\"$msg\")")
+            }
+        )
+    }
+
+    /** Spec 模式：生成执行计划 */
+    private fun handleGeneratePlan(json: Map<*, *>) {
+        val content = json["content"] as? String ?: return
+        val sid = currentSessionId ?: run {
+            val activeInfo = llmService.getActiveInfo()
+            val s = SessionManager.createSession(activeInfo.provider ?: "", activeInfo.model ?: "")
+            currentSessionId = s.id; s.id
+        }
+        val history = SessionManager.getMessages(sid)
+        currentAiBuffer.clear()
+
+        com.forgecode.plugin.idea.agent.AgentService.generatePlan(
+            userRequirement = content,
+            sessionHistory = history,
+            onPlanToken = { token ->
+                currentAiBuffer.append(token)
+                val escaped = token.replace("\\","\\\\").replace("`","\\`").replace("$","\\$")
+                executeJS("window.appendToken && window.appendToken(`$escaped`)")
+            },
+            onPlanReady = { steps ->
+                val stepsJson = gson.toJson(steps)
+                executeJS("window.onPlanReady && window.onPlanReady($stepsJson)")
+                executeJS("window.onStreamDone && window.onStreamDone()")
+            },
+            onError = { ex ->
+                val msg = (ex.message ?: "未知错误").replace("\"","\\\"").replace("\n","\\n")
+                executeJS("window.onError && window.onError(\"$msg\")")
+            }
+        )
+    }
+
+    /** Spec 模式：执行已确认的计划 */
+    @Suppress("UNCHECKED_CAST")
+    private fun handleExecutePlan(json: Map<*, *>) {
+        val requirement = json["requirement"] as? String ?: return
+        val planRaw = json["plan"] as? List<*> ?: return
+        val steps = planRaw.mapIndexedNotNull { i, item ->
+            if (item is Map<*, *>) {
+                com.forgecode.plugin.idea.agent.AgentService.PlanStep(
+                    index = (item["index"] as? Double)?.toInt() ?: (i + 1),
+                    title = item["title"] as? String ?: "",
+                    description = item["description"] as? String ?: ""
+                )
+            } else null
+        }
+
+        com.forgecode.plugin.idea.agent.AgentService.executePlan(
+            plan = steps,
+            userRequirement = requirement,
+            project = project,
+            onStepStart = { step ->
+                val stepJson = gson.toJson(mapOf("index" to step.index, "title" to step.title, "status" to "RUNNING"))
+                executeJS("window.onPlanStepUpdate && window.onPlanStepUpdate($stepJson)")
+            },
+            onStepToken = { token ->
+                val escaped = token.replace("\\","\\\\").replace("`","\\`").replace("$","\\$")
+                executeJS("window.appendToken && window.appendToken(`$escaped`)")
+            },
+            onStepDone = { step ->
+                val stepJson = gson.toJson(mapOf("index" to step.index, "title" to step.title, "status" to "DONE"))
+                executeJS("window.onPlanStepUpdate && window.onPlanStepUpdate($stepJson)")
+            },
+            onAllDone = {
+                executeJS("window.onPlanAllDone && window.onPlanAllDone()")
+                executeJS("window.onStreamDone && window.onStreamDone()")
+            },
+            onError = { ex ->
+                val msg = (ex.message ?: "未知错误").replace("\"","\\\"").replace("\n","\\n")
+                executeJS("window.onError && window.onError(\"$msg\")")
+            }
+        )
     }
 
     // ==================== 工具方法 ====================

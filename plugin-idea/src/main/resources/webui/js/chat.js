@@ -31,6 +31,8 @@ window.onInit = function(data) {
         document.getElementById('project-name').textContent = data.projectName;
     }
     if (data.activeModel) {
+        state.activeProvider = data.activeProvider || '';
+        state.activeModel = data.activeModel || '';
         updateModelDisplay(data.activeProvider, data.activeModel);
     }
     if (data.defaultMode) {
@@ -155,6 +157,351 @@ window.onSessionTitleUpdate = function(sessionId, title) {
     if (item) item.textContent = title;
 };
 
+// ==================== Agent 模式 ====================
+
+// ==================== Agent 工具汇总块 ====================
+
+// 当前会话的工具汇总容器（折叠块）
+let agentSummaryEl = null;
+let agentToolItems = [];  // [{tool, summary}]
+
+/** Agent 步骤通知 */
+window.onAgentStep = function(step) {
+    switch (step.type) {
+        case 'THINKING':
+            removeThinking();
+            showThinking();
+            break;
+        case 'TOOL_CALL':
+            removeThinking();
+            updateAgentPanel(step.toolName, step.content === 'success', step.toolResult || '');
+            break;
+        case 'RESPONSE':
+            // 最终回复来临：先完成面板（变绿），再移除 thinking，然后等待 token 流
+            finalizeAgentPanel();
+            removeThinking();
+            // 为接下来的 token 流创建 AI 消息气泡（含模型名 + 🔥）
+            addAiMessagePlaceholder();
+            state.isStreaming = true;
+            document.getElementById('send-btn').style.display = 'none';
+            document.getElementById('stop-btn').style.display = 'flex';
+            break;
+        case 'ERROR':
+            finalizeAgentPanel();
+            removeThinking();
+            appendErrorMessage(step.content);
+            break;
+    }
+};
+
+// ==================== Agent 工具执行面板（唯一面板，转圈→完成）====================
+
+const TOOL_ICONS = {
+    read_file: '📄', write_file: '✏️', list_files: '📁',
+    search_code: '🔍', run_terminal: '⚡'
+};
+const TOOL_LABELS = {
+    read_file: '读取文件', write_file: '写入文件', list_files: '列出目录',
+    search_code: '搜索代码', run_terminal: '执行命令'
+};
+
+// 当前 Agent 任务唯一面板（不会重复创建）
+let agentPanelEl = null;
+let agentPanelItems = [];
+
+/**
+ * 更新（或创建）唯一的工具执行面板
+ * 执行中：转圈 + 显示当前正在执行的操作
+ */
+function updateAgentPanel(toolName, success, result) {
+    agentPanelItems.push({ tool: toolName, success, result });
+
+    if (!agentPanelEl) {
+        // 外层与 AI 消息对齐（含 🔥 头像 + 模型名）
+        const wrap = document.createElement('div');
+        wrap.className = 'message ai-message agent-panel-wrap';
+        const panelId = 'agent-panel-' + Date.now();
+        wrap.id = panelId;
+        const modelLabel = state.activeModel
+            ? `<span class="ai-model-label">${state.activeProvider ? state.activeProvider + ' · ' : ''}${state.activeModel}</span>`
+            : '';
+        wrap.innerHTML = `
+            <div class="ai-avatar">🔥</div>
+            <div class="message-content">
+                <div class="ai-message-header">${modelLabel}</div>
+                <div class="agent-panel running" id="${panelId}-panel"></div>
+            </div>`;
+        document.getElementById('messages').appendChild(wrap);
+        agentPanelEl = document.getElementById(panelId + '-panel');
+    }
+
+    // 执行中：转圈 + 当前步骤
+    const cur = agentPanelItems[agentPanelItems.length - 1];
+    const icon = TOOL_ICONS[cur.tool] || '🔧';
+    const label = TOOL_LABELS[cur.tool] || cur.tool;
+    agentPanelEl.innerHTML = `
+        <div class="ap-header">
+            <span class="ap-spinner"></span>
+            <span class="ap-status-text">${icon} ${label}（已执行 ${agentPanelItems.length} 步）</span>
+        </div>`;
+    scrollToBottom();
+}
+
+/**
+ * 所有工具执行完成，面板切换为完成状态（可展开查看详情）
+ */
+function finalizeAgentPanel() {
+    if (!agentPanelEl || agentPanelItems.length === 0) {
+        agentPanelEl = null;
+        agentPanelItems = [];
+        return;
+    }
+
+    const items = agentPanelItems;
+    const panelId = agentPanelEl.id;
+    const count = items.length;
+    const hasError = items.some(i => !i.success);
+    const toolTypes = [...new Set(items.map(i => i.tool))];
+    const summaryIcons = toolTypes.map(t => (TOOL_ICONS[t] || '🔧') + ' ' + (TOOL_LABELS[t] || t)).join('  ·  ');
+    const doneIcon = hasError ? '⚠️' : '✅';
+
+    agentPanelEl.innerHTML = `
+        <div class="ap-header ap-clickable" onclick="toggleAgentPanel('${panelId}')">
+            <span class="ap-done-icon">${doneIcon}</span>
+            <span class="ap-status-text">已完成 ${count} 步分析</span>
+            <span class="ap-summary-icons">${summaryIcons}</span>
+            <span class="ap-arrow" id="ap-arrow-${panelId}">▶</span>
+        </div>
+        <div class="ap-detail" id="ap-detail-${panelId}" style="display:none">
+            ${items.map(item => {
+                const ic = TOOL_ICONS[item.tool] || '🔧';
+                const lb = TOOL_LABELS[item.tool] || item.tool;
+                const preview = (item.result || '').split('\n').filter(l => l.trim()).slice(0, 2).join(' ').slice(0, 100);
+                return `<div class="ap-item">
+                    <span class="ap-item-ic">${ic}</span>
+                    <span class="ap-item-lb">${lb}</span>
+                    <span class="ap-item-preview">${escapeHtml(preview)}</span>
+                    <span class="ap-item-ok">${item.success ? '✓' : '✗'}</span>
+                </div>`;
+            }).join('')}
+        </div>`;
+
+    agentPanelEl.classList.add('done');
+    // 重置，下一次 Agent 任务创建新面板
+    agentPanelEl = null;
+    agentPanelItems = [];
+    scrollToBottom();
+}
+
+function toggleAgentPanel(panelId) {
+    const detail = document.getElementById('ap-detail-' + panelId);
+    const arrow = document.getElementById('ap-arrow-' + panelId);
+    if (!detail) return;
+    const isOpen = detail.style.display !== 'none';
+    detail.style.display = isOpen ? 'none' : 'block';
+    if (arrow) arrow.textContent = isOpen ? '▶' : '▼';
+}
+
+/** 计划生成完成 */
+window.onPlanReady = function(steps) {
+    removeThinking();
+    renderPlanConfirm(steps);
+};
+
+/** 计划步骤状态更新 */
+window.onPlanStepUpdate = function(step) {
+    const el = document.querySelector(`.plan-step[data-index="${step.index}"]`);
+    if (!el) return;
+    el.querySelector('.plan-step-status').textContent =
+        step.status === 'DONE' ? '✅' : step.status === 'RUNNING' ? '⏳' : '❌';
+    if (step.status === 'RUNNING') el.classList.add('running');
+    if (step.status === 'DONE') { el.classList.remove('running'); el.classList.add('done'); }
+};
+
+/** 全部计划执行完成 */
+window.onPlanAllDone = function() {
+    const planEl = document.querySelector('.plan-execution');
+    if (planEl) planEl.querySelector('.plan-header').textContent = '✅ 计划执行完成';
+};
+
+/** 在聊天界面插入 Agent 步骤气泡 */
+function appendAgentStep(icon, content, type) {
+    const el = document.createElement('div');
+    el.className = `message agent-step agent-step-${type}`;
+    el.innerHTML = `<span class="agent-step-icon">${icon}</span>
+        <span class="agent-step-content">${content}</span>`;
+    document.getElementById('messages').appendChild(el);
+    scrollToBottom();
+}
+
+/** 渲染 Spec 计划确认卡片 */
+function renderPlanConfirm(steps) {
+    const msgEl = document.createElement('div');
+    msgEl.className = 'message ai-message';
+
+    const iconEl = document.createElement('div');
+    iconEl.className = 'ai-icon';
+    iconEl.textContent = '🔥';
+
+    const bubbleEl = document.createElement('div');
+    bubbleEl.className = 'bubble plan-confirm';
+
+    const stepsHtml = steps.map(s =>
+        `<div class="plan-step" data-index="${s.index}">
+            <span class="plan-step-status">⏳</span>
+            <div class="plan-step-info">
+                <strong>步骤 ${s.index}：${escapeHtml(s.title)}</strong>
+                ${s.description ? `<div class="plan-step-desc">${escapeHtml(s.description)}</div>` : ''}
+            </div>
+        </div>`
+    ).join('');
+
+    bubbleEl.innerHTML = `
+        <div class="plan-header">📋 执行计划（${steps.length} 个步骤）</div>
+        <div class="plan-steps">${stepsHtml}</div>
+        <div class="plan-actions">
+            <button class="plan-confirm-btn" onclick="confirmPlan(this, ${JSON.stringify(steps).replace(/"/g, '&quot;')})">
+                ▶ 开始执行
+            </button>
+            <button class="plan-cancel-btn" onclick="this.closest('.plan-confirm').innerHTML='<span style=color:#888>已取消</span>'">
+                取消
+            </button>
+        </div>`;
+
+    msgEl.appendChild(iconEl);
+    msgEl.appendChild(bubbleEl);
+    document.getElementById('messages').appendChild(msgEl);
+    scrollToBottom();
+}
+
+/** 用户点击确认执行计划 */
+function confirmPlan(btn, steps) {
+    btn.disabled = true;
+    btn.textContent = '⏳ 执行中...';
+    btn.closest('.plan-actions').querySelector('.plan-cancel-btn').disabled = true;
+
+    // 将计划卡片变为执行状态
+    const planEl = btn.closest('.plan-confirm');
+    planEl.classList.add('plan-execution');
+    planEl.querySelector('.plan-actions').style.display = 'none';
+
+    const requirement = state.messages.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
+
+    bridge.send({
+        type: 'executePlan',
+        requirement: requirement,
+        plan: steps
+    });
+
+    showThinking();
+}
+
+// ==================== Chat模式 / Agent仓库智聊 切换 ====================
+
+/** 当前大模式：'chat' | 'agent' */
+state.chatBigMode = 'agent';   // 默认 Agent 仓库智聊
+
+/** 打开/关闭 大模式下拉菜单 */
+function toggleChatModeMenu() {
+    const menu = document.getElementById('chat-mode-menu');
+    const isOpen = menu.style.display !== 'none';
+    menu.style.display = isOpen ? 'none' : 'block';
+}
+
+/** 选择大模式 */
+function selectChatMode(mode) {
+    state.chatBigMode = mode;
+    document.getElementById('chat-mode-menu').style.display = 'none';
+
+    // 更新按钮菜单高亮
+    document.querySelectorAll('.chat-mode-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.mode === mode);
+    });
+
+    // 欢迎页模式卡片显隐
+    const modeCards = document.querySelector('.mode-cards');
+
+    if (mode === 'chat') {
+        // Chat 普通聊天
+        document.getElementById('chat-mode-icon').textContent = '○';
+        document.getElementById('chat-mode-label').textContent = 'Chat 普通聊天';
+        document.getElementById('user-input').placeholder = '输入问题... (Enter 发送)';
+        // 隐藏欢迎页 Vibe/Spec 模式卡片
+        if (modeCards) modeCards.style.display = 'none';
+    } else {
+        // Agent 仓库智聊
+        document.getElementById('chat-mode-icon').textContent = '</>';
+        document.getElementById('chat-mode-label').textContent = 'Agent 仓库智聊';
+        document.getElementById('user-input').placeholder = '描述任务，AI 将自动读取仓库、修改代码... (Enter 发送)';
+        // 显示欢迎页 Vibe/Spec 模式卡片
+        if (modeCards) modeCards.style.display = 'flex';
+    }
+}
+
+/** 点击其他地方关闭下拉 */
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('#chat-mode-switcher') && !e.target.closest('#chat-mode-menu')) {
+        document.getElementById('chat-mode-menu').style.display = 'none';
+    }
+});
+
+/** 欢迎页模式卡片选择（Vibe / Spec） */
+function selectMode(mode) {
+    state.currentMode = mode;
+    document.querySelectorAll('.mode-card').forEach(card => {
+        card.classList.toggle('active', card.id === 'card-' + mode);
+    });
+    // 更新适用场景
+    const sceneVibe = document.getElementById('scene-vibe');
+    const sceneSpec = document.getElementById('scene-spec');
+    if (sceneVibe) sceneVibe.style.display = mode === 'vibe' ? 'block' : 'none';
+    if (sceneSpec) sceneSpec.style.display = mode === 'spec' ? 'block' : 'none';
+}
+
+/** 根据当前模式发送消息 — 所有模式均有 Agent 能力 */
+function sendMessage() {
+    const input = document.getElementById('user-input');
+    let content = input.value.trim();
+    if (!content || state.isStreaming) return;
+
+    let finalContent = content;
+    if (state.ctxFiles.length > 0) {
+        const ctxBlock = state.ctxFiles.map(f =>
+            `### 文件: \`${f.path}\`\n\`\`\`\n${f.content}\n\`\`\``
+        ).join('\n\n');
+        finalContent = `以下是用户引用的项目文件，请结合这些内容回答：\n\n${ctxBlock}\n\n---\n\n用户问题：${content}`;
+    }
+
+    input.value = '';
+    autoResize(input);
+    closeFilePicker();
+
+    const tagsEl = document.getElementById('ctx-tags');
+    state.ctxFiles = [];
+    tagsEl.innerHTML = '';
+    tagsEl.style.display = 'none';
+
+    document.getElementById('welcome-screen').style.display = 'none';
+    document.getElementById('messages').style.display = 'flex';
+
+    addUserMessage(content);
+    showThinking();
+
+    // Chat 普通聊天 → 直接发送，纯对话无 Agent 能力
+    if (state.chatBigMode === 'chat') {
+        bridge.send({ type: 'sendMessage', content: finalContent, sessionId: state.currentSessionId });
+        return;
+    }
+
+    // Agent 仓库智聊 → 所有子模式均走 Agent（包含仓库感知）
+    // Spec 模式：先生成计划；Vibe/Agent：直接执行
+    if (state.currentMode === 'spec') {
+        bridge.send({ type: 'generatePlan', content: finalContent, sessionId: state.currentSessionId });
+    } else {
+        bridge.send({ type: 'runAgent', content: finalContent, sessionId: state.currentSessionId });
+    }
+}
+
 /** 从右键菜单发送消息（预填输入框并发送） */
 window.setInputAndSend = function(content) {
     document.getElementById('user-input').value = content;
@@ -191,48 +538,6 @@ function handleKeyDown(event) {
 function onInputChange(event) {
     autoResize(event.target);
     handleAtTrigger(event.target);
-}
-
-function sendMessage() {
-    const input = document.getElementById('user-input');
-    let content = input.value.trim();
-    if (!content || state.isStreaming) return;
-
-    // 注入 @引用文件 上下文到消息前
-    let finalContent = content;
-    if (state.ctxFiles.length > 0) {
-        const ctxBlock = state.ctxFiles.map(f =>
-            `### 文件: \`${f.path}\`\n\`\`\`\n${f.content}\n\`\`\``
-        ).join('\n\n');
-        finalContent = `以下是用户引用的项目文件，请结合这些内容回答：\n\n${ctxBlock}\n\n---\n\n用户问题：${content}`;
-    }
-
-    input.value = '';
-    autoResize(input);
-    closeFilePicker();
-
-    // 清空引用标签
-    const tagsEl = document.getElementById('ctx-tags');
-    state.ctxFiles = [];
-    tagsEl.innerHTML = '';
-    tagsEl.style.display = 'none';
-
-    // 隐藏欢迎页，显示消息列表
-    document.getElementById('welcome-screen').style.display = 'none';
-    document.getElementById('messages').style.display = 'flex';
-
-    // 添加用户消息气泡（展示原始内容，不展示文件内容）
-    addUserMessage(content, state.ctxFiles.map(f => f.name));
-
-    // 显示"思考中"loading 动画
-    showThinking();
-
-    // 发送到 Kotlin（携带注入了文件内容的完整消息）
-    bridge.send({
-        type: 'sendMessage',
-        content: finalContent,
-        sessionId: state.currentSessionId
-    });
 }
 
 function cancelMessage() {
@@ -589,15 +894,6 @@ function retryConnect() {
     document.getElementById('offline-banner').style.display = 'none';
 }
 
-// ==================== 模式选择 ====================
-
-function selectMode(mode) {
-    state.currentMode = mode;
-    document.getElementById('card-vibe').classList.toggle('active', mode === 'vibe');
-    document.getElementById('card-spec').classList.toggle('active', mode === 'spec');
-    document.getElementById('scene-vibe').style.display = mode === 'vibe' ? 'block' : 'none';
-}
-
 function toggleSuggestions() {
     state.suggestionsVisible = !state.suggestionsVisible;
     const el = document.getElementById('suggestions');
@@ -719,7 +1015,9 @@ function closeModelDropdown() {
 function addUserMessage(content) {
     const msgEl = document.createElement('div');
     msgEl.className = 'message user-message';
-    msgEl.innerHTML = `<div class="message-bubble">${escapeHtml(content)}</div>`;
+    msgEl.innerHTML = `
+        <div class="message-bubble">${escapeHtml(content)}</div>
+        <div class="user-avatar">👤</div>`;
     document.getElementById('messages').appendChild(msgEl);
     scrollToBottom();
 }
@@ -730,11 +1028,15 @@ let mdRenderTimer = null;
 
 function addAiMessagePlaceholder() {
     currentAiRaw = '';
+    const modelLabel = state.activeModel
+        ? `<span class="ai-model-label">${state.activeProvider ? state.activeProvider + ' · ' : ''}${state.activeModel}</span>`
+        : '';
     const msgEl = document.createElement('div');
     msgEl.className = 'message ai-message';
     msgEl.innerHTML = `
         <div class="ai-avatar">🔥</div>
         <div class="message-content">
+            <div class="ai-message-header">${modelLabel}</div>
             <div class="message-text streaming" id="ai-streaming"></div>
         </div>`;
     document.getElementById('messages').appendChild(msgEl);
@@ -746,21 +1048,38 @@ function appendToLastAiMessage(token) {
     if (!currentAiEl) return;
     currentAiRaw += token;
 
-    // 增量 Markdown 渲染（节流 300ms，避免每个 token 都触发 DOM 重排）
+    // 增量 Markdown 渲染（节流 80ms，兼顾流畅度和性能）
     if (!mdRenderTimer) {
         mdRenderTimer = setTimeout(() => {
             mdRenderTimer = null;
             renderStreamingMarkdown();
-        }, 300);
+        }, 80);
     }
+}
+
+/**
+ * 过滤掉 AI 回复中不应展示给用户的内容：
+ * - <tool_call>...</tool_call> 标签块
+ * - 裸 JSON 工具调用（如 {"tool":"read_file","path":"..."}）
+ */
+function cleanAiOutput(raw) {
+    let text = raw;
+    // 移除 <tool_call> 块
+    text = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+    // 移除裸 JSON 工具调用（含 "tool" 字段且值为已知工具名的 JSON 对象）
+    text = text.replace(/\{[^{}]*"tool"\s*:\s*"(read_file|write_file|list_files|search_code|run_terminal)"[^{}]*\}/g, '');
+    // 清理多余空行
+    text = text.replace(/\n{3,}/g, '\n\n').trim();
+    return text;
 }
 
 /** 流式过程中增量渲染 Markdown */
 function renderStreamingMarkdown() {
     if (!currentAiEl) return;
+    const displayText = cleanAiOutput(currentAiRaw);
     if (typeof marked !== 'undefined') {
         try {
-            currentAiEl.innerHTML = marked.parse(currentAiRaw) +
+            currentAiEl.innerHTML = marked.parse(displayText) +
                 '<span class="streaming-cursor">▋</span>';
         } catch (e) {
             currentAiEl.textContent = currentAiRaw;
@@ -778,21 +1097,22 @@ function finalizeLastAiMessage() {
         clearTimeout(mdRenderTimer);
         mdRenderTimer = null;
     }
-    // 流结束后做最终 Markdown 渲染
+    // 流结束后做最终 Markdown 渲染（过滤工具调用内容）
+    const finalText = cleanAiOutput(currentAiRaw);
     currentAiEl.id = '';
     currentAiEl.classList.remove('streaming');
     if (typeof marked !== 'undefined') {
         try {
-            currentAiEl.innerHTML = marked.parse(currentAiRaw);
+            currentAiEl.innerHTML = marked.parse(finalText);
         } catch (e) {
-            currentAiEl.textContent = currentAiRaw;
+            currentAiEl.textContent = finalText;
         }
         // 为代码块添加复制按钮和 Apply 按钮
         currentAiEl.querySelectorAll('pre code').forEach(codeEl => {
             addCodeActions(codeEl);
         });
     } else {
-        currentAiEl.textContent = currentAiRaw;
+        currentAiEl.textContent = finalText;
     }
     currentAiEl = null;
     currentAiRaw = '';
@@ -976,3 +1296,13 @@ const PROVIDER_LOGOS = {
 function getProviderLogo(name) {
     return PROVIDER_LOGOS[name] || '🔷';
 }
+
+// ==================== 页面初始化 ====================
+
+// 页面加载后：默认设置为 Agent 仓库智聊模式
+document.addEventListener('DOMContentLoaded', function() {
+    // 同步默认状态到 UI
+    selectChatMode('agent');
+    // 默认显示 vibe 场景，隐藏 spec 场景
+    selectMode('vibe');
+});

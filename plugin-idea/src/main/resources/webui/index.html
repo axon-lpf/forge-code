@@ -63,18 +63,33 @@
             </div>
         </div>
 
-        <!-- 适用场景 -->
+        <!-- 适用场景：Vibe -->
         <div class="scene-section" id="scene-vibe">
             <div class="scene-title">适用场景：</div>
-            <div class="scene-item">• 通过对话描述想法，无需文档</div>
+            <div class="scene-item">• 通过对话描述想法，边聊边实现</div>
             <div class="scene-item">• 基于反馈进行增量式改进和功能扩展</div>
-            <div class="scene-item">• 适合：原型开发、探索性编程、小型项目</div>
+            <div class="scene-item">• 适合：原型开发、探索性编程、快速迭代</div>
             <div class="suggest-btn" onclick="toggleSuggestions()">推荐问题 ∧</div>
             <div class="suggestions" id="suggestions">
-                <div class="suggestion" onclick="sendSuggestion(this)">帮我创建一个 Spring Boot REST API 项目骨架</div>
                 <div class="suggestion" onclick="sendSuggestion(this)">解释一下这个项目的整体架构</div>
                 <div class="suggestion" onclick="sendSuggestion(this)">帮我找出代码中的潜在问题</div>
+                <div class="suggestion" onclick="sendSuggestion(this)">帮我创建一个 Spring Boot REST API 项目骨架</div>
                 <div class="suggestion" onclick="sendSuggestion(this)">生成这个类的单元测试</div>
+            </div>
+        </div>
+
+        <!-- 适用场景：Spec -->
+        <div class="scene-section" id="scene-spec" style="display:none">
+            <div class="scene-title">适用场景：</div>
+            <div class="scene-item">• 先生成执行计划，用户确认后再实施</div>
+            <div class="scene-item">• 大型功能开发、架构重构、多文件改动</div>
+            <div class="scene-item">• 适合：工程化项目、需精确控制的任务</div>
+            <div class="suggest-btn" onclick="toggleSuggestions()">推荐问题 ∧</div>
+            <div class="suggestions" id="suggestions-spec">
+                <div class="suggestion" onclick="sendSuggestion(this)">为项目添加用户认证模块</div>
+                <div class="suggestion" onclick="sendSuggestion(this)">将现有代码重构为 Clean Architecture</div>
+                <div class="suggestion" onclick="sendSuggestion(this)">为所有 Service 层添加单元测试</div>
+                <div class="suggestion" onclick="sendSuggestion(this)">集成 Redis 缓存到现有项目</div>
             </div>
         </div>
 
@@ -126,14 +141,35 @@
         <button class="stop-btn" id="stop-btn" onclick="cancelMessage()" style="display:none">■</button>
     </div>
     <div class="bottom-bar">
-        <div class="mode-selector" onclick="toggleModeMenu()">
-            <span id="current-mode-text">Agent 仓库智聊</span>
-            <span>∨</span>
+        <!-- 左：Chat普通聊天 / Agent仓库智聊 切换 -->
+        <div class="chat-mode-switcher" id="chat-mode-switcher" onclick="toggleChatModeMenu()">
+            <span id="chat-mode-icon">○</span>
+            <span id="chat-mode-label">Chat 普通聊天</span>
+            <span class="switcher-arrow">∨</span>
         </div>
+        <!-- 右：模型选择 -->
         <div class="model-selector" onclick="openModelPicker()">
             <span>⚡</span>
             <span id="current-model-text">加载中...</span>
             <span>∨</span>
+        </div>
+    </div>
+
+    <!-- Chat模式切换下拉菜单 -->
+    <div class="chat-mode-menu" id="chat-mode-menu" style="display:none">
+        <div class="chat-mode-item" data-mode="chat" onclick="selectChatMode('chat')">
+            <span class="chat-mode-item-icon">○</span>
+            <div class="chat-mode-item-info">
+                <div class="chat-mode-item-title">Chat 普通聊天</div>
+                <div class="chat-mode-item-desc">解答基础代码与技术问题</div>
+            </div>
+        </div>
+        <div class="chat-mode-item active" data-mode="agent" onclick="selectChatMode('agent')">
+            <span class="chat-mode-item-icon">&lt;/&gt;</span>
+            <div class="chat-mode-item-info">
+                <div class="chat-mode-item-title">Agent 仓库智聊</div>
+                <div class="chat-mode-item-desc">可规划、读写代码、调用工具的 Coding Agent</div>
+            </div>
         </div>
     </div>
 </div>
