@@ -6,7 +6,7 @@ plugins {
     id("org.jetbrains.intellij") version "1.17.2"
 }
 
-group = "com.forgecode.plugin"
+group = "com.codeforge.plugin"
 version = providers.gradleProperty("pluginVersion").get()
 
 repositories {
@@ -67,7 +67,7 @@ tasks {
 
     // 构建插件 zip
     buildPlugin {
-        archiveFileName.set("forge-code-${providers.gradleProperty("pluginVersion").get()}.zip")
+        archiveFileName.set("codeforge-${providers.gradleProperty("pluginVersion").get()}.zip")
     }
 
     // 测试配置

@@ -15,4 +15,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "forge-code-idea"
+rootProject.name = "codeforge-idea"

@@ -1,11 +1,11 @@
 <idea-plugin>
-    <id>com.forgecode.idea</id>
-    <name>Forge Code</name>
+    <id>com.codeforge.idea</id>
+    <name>CodeForge</name>
     <version>1.0.0</version>
-    <vendor email="support@forgecode.dev" url="https://github.com/forgecode">ForgeCode</vendor>
+    <vendor email="support@codeforge.dev" url="https://github.com/codeforge">CodeForge</vendor>
 
     <description><![CDATA[
-        <b>Forge Code</b> — 锻造每一行代码<br/><br/>
+        <b>CodeForge</b> — 锻造每一行代码<br/><br/>
         AI 编程助手，聚合国内外 16+ 主流大模型，在 IDE 内自由切换。<br/><br/>
         <b>核心功能：</b>
         <ul>
@@ -26,63 +26,101 @@
 
         <!-- ===== 侧边栏聊天窗口 ===== -->
         <toolWindow
-                id="Forge Code"
+                id="CodeForge"
                 anchor="right"
                 secondary="false"
                 canCloseContents="false"
-                factoryClass="com.forgecode.plugin.idea.toolwindow.ForgeToolWindowFactory"
+                factoryClass="com.codeforge.plugin.idea.toolwindow.CodeForgeToolWindowFactory"
                 icon="/icons/forge_13.svg"/>
 
         <!-- ===== 底部状态栏模型切换 Widget ===== -->
         <statusBarWidgetFactory
-                id="ForgeModelStatusBar"
-                implementation="com.forgecode.plugin.idea.statusbar.ModelStatusBarFactory"
+                id="CodeForgeModelStatusBar"
+                implementation="com.codeforge.plugin.idea.statusbar.ModelStatusBarFactory"
                 order="first"/>
 
-        <!-- ===== 设置页（File → Settings → Tools → Forge Code）===== -->
+        <!-- ===== 设置页（File → Settings → Tools → CodeForge）===== -->
         <applicationConfigurable
                 parentId="tools"
-                instance="com.forgecode.plugin.idea.settings.ForgeSettingsConfigurable"
-                id="com.forgecode.idea.settings"
-                displayName="Forge Code"/>
+                instance="com.codeforge.plugin.idea.settings.CodeForgeSettingsConfigurable"
+                id="com.codeforge.idea.settings"
+                displayName="CodeForge"/>
 
         <!-- ===== 持久化设置存储 ===== -->
         <applicationService
-                serviceImplementation="com.forgecode.plugin.idea.settings.ForgeSettings"/>
+                serviceImplementation="com.codeforge.plugin.idea.settings.CodeForgeSettings"/>
 
         <!-- ===== LLM 服务（应用级单例，直接调用内置 Provider）===== -->
         <applicationService
-                serviceImplementation="com.forgecode.plugin.idea.service.LlmService"/>
+                serviceImplementation="com.codeforge.plugin.idea.service.LlmService"/>
 
         <!-- ===== 行内代码补全 Provider ===== -->
         <inlineCompletion.provider
-                implementation="com.forgecode.plugin.idea.completion.ForgeInlineCompletionProvider"/>
+                implementation="com.codeforge.plugin.idea.completion.CodeForgeInlineCompletionProvider"/>
 
     </extensions>
 
     <actions>
-        <!-- ===== 编辑器右键菜单 ===== -->
-        <group id="ForgeCode.EditorMenu" text="Forge Code" description="Forge Code AI 操作" popup="true"
+        <!-- ===== 编辑器右键菜单（置顶） ===== -->
+        <group id="CodeForge.EditorMenu" text="CodeForge" description="CodeForge AI 操作" popup="true"
                icon="/icons/forge_16.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <separator/>
-            <action id="ForgeCode.ExplainCode"
-                    class="com.forgecode.plugin.idea.actions.ExplainCodeAction"
-                    text="✨ 解释代码"
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+
+            <action id="CodeForge.Chat"
+                    class="com.codeforge.plugin.idea.actions.ChatAction"
+                    text="Chat"
+                    description="打开 CodeForge 聊天面板"/>
+
+            <action id="CodeForge.CustomPrompt"
+                    class="com.codeforge.plugin.idea.actions.CustomPromptAction"
+                    text="Run Custom Prompt Template"
+                    description="运行自定义 Prompt 模板"/>
+
+            <action id="CodeForge.FindProblem"
+                    class="com.codeforge.plugin.idea.actions.FindProblemAction"
+                    text="Find Problem"
+                    description="让 AI 查找代码中的潜在问题"/>
+
+            <action id="CodeForge.ExplainCode"
+                    class="com.codeforge.plugin.idea.actions.ExplainCodeAction"
+                    text="Explain"
                     description="让 AI 解释选中的代码"/>
-            <action id="ForgeCode.OptimizeCode"
-                    class="com.forgecode.plugin.idea.actions.OptimizeCodeAction"
-                    text="⚡ 优化代码"
+
+            <action id="CodeForge.OptimizeCode"
+                    class="com.codeforge.plugin.idea.actions.OptimizeCodeAction"
+                    text="Optimize"
                     description="让 AI 优化选中的代码"/>
-            <action id="ForgeCode.ReviewCode"
-                    class="com.forgecode.plugin.idea.actions.ReviewCodeAction"
-                    text="🔍 审查代码"
-                    description="让 AI 审查选中的代码，找出潜在问题"/>
-            <action id="ForgeCode.GenerateTest"
-                    class="com.forgecode.plugin.idea.actions.GenerateTestAction"
-                    text="🧪 生成单元测试"
+
+            <action id="CodeForge.Generate"
+                    class="com.codeforge.plugin.idea.actions.GenerateAction"
+                    text="Generate"
+                    description="让 AI 根据上下文生成代码">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt K"/>
+            </action>
+
+            <action id="CodeForge.AddComments"
+                    class="com.codeforge.plugin.idea.actions.AddCommentsAction"
+                    text="Add Comments"
+                    description="让 AI 为选中的代码添加注释">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt SLASH"/>
+            </action>
+
+            <action id="CodeForge.AddDocstring"
+                    class="com.codeforge.plugin.idea.actions.AddDocstringAction"
+                    text="Add Docstring"
+                    description="让 AI 为选中的代码添加文档注释">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt 3"/>
+            </action>
+
+            <action id="CodeForge.GenerateTest"
+                    class="com.codeforge.plugin.idea.actions.GenerateTestAction"
+                    text="Generate Unit Test"
                     description="让 AI 为选中的代码生成单元测试"/>
-            <separator/>
+
+            <action id="CodeForge.ReviewCode"
+                    class="com.codeforge.plugin.idea.actions.ReviewCodeAction"
+                    text="Review Code"
+                    description="让 AI 审查选中的代码，找出潜在问题"/>
         </group>
     </actions>
 

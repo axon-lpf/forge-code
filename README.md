@@ -1,4 +1,4 @@
-# 🔥 Forge Code
+# 🔥 CodeForge
 
 > **锻造每一行代码** — AI 编程助手插件，聚合国内外 16+ 主流大模型，支持 IntelliJ IDEA 和 VSCode
 
@@ -7,10 +7,10 @@
 ## 工程结构
 
 ```
-forge-code/
+codeforge/
 ├── plugin-idea/        IntelliJ IDEA 插件 (Kotlin + Gradle)
 ├── plugin-vscode/      VSCode 插件 (TypeScript，Phase 2)
-└── forge-code-design.md  完整技术设计文档
+└── codeforge-design.md  完整技术设计文档
 ```
 
 ## 依赖
@@ -38,13 +38,13 @@ cd plugin-idea
 
 # 构建插件 zip
 ./gradlew buildPlugin
-# 输出: build/distributions/forge-code-1.0.0.zip
+# 输出: build/distributions/codeforge-1.0.0.zip
 ```
 
 ### 3. 安装插件
 
 - IDEA → Settings → Plugins → Install Plugin from Disk
-- 选择 `forge-code-1.0.0.zip`
+- 选择 `codeforge-1.0.0.zip`
 
 ## 功能
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * chat.js — 聊天核心逻辑
  */
 
@@ -241,7 +241,7 @@ function updateAgentPanel(toolName, success, result) {
             <div class="ai-avatar">🔥</div>
             <div class="message-content">
                 <div class="cm-msg-header">
-                    <span class="cm-brand">Forge Code</span>
+                    <span class="cm-brand">CodeForge</span>
                     <span class="cm-meta">${timeStr}${modelName ? ' · ' + providerName + ' ' + modelName : ''}</span>
                 </div>
                 <div class="agent-panel running" id="${panelId}-panel">
@@ -1107,7 +1107,7 @@ function addAiMessagePlaceholder() {
         <div class="ai-avatar">🔥</div>
         <div class="message-content">
             <div class="cm-msg-header">
-                <span class="cm-brand">Forge Code</span>
+                <span class="cm-brand">CodeForge</span>
                 <span class="cm-meta">${metaStr}</span>
             </div>
             <div class="message-text streaming" id="ai-streaming"></div>
@@ -1378,6 +1378,35 @@ document.addEventListener('DOMContentLoaded', function() {
     selectChatMode('agent');
     // 默认显示 vibe 场景，隐藏 spec 场景
     selectMode('vibe');
+    // 跟随 IDEA 主题自动切换
+    applyIDETheme();
+});
+
+/**
+ * 主题适配：通过检测背景色亮度决定 light/dark
+ * IDEA 会把 body 背景色设为当前主题的背景，利用这一点做判断
+ */
+function applyIDETheme() {
+    try {
+        const bg = window.getComputedStyle(document.body).backgroundColor;
+        const match = bg.match(/\d+/g);
+        if (match && match.length >= 3) {
+            const [r, g, b] = match.map(Number);
+            // 感知亮度公式
+            const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+            if (luminance > 0.5) {
+                document.body.classList.add('light');
+            } else {
+                document.body.classList.remove('light');
+            }
+        }
+    } catch (e) { /* 无法检测时保持默认暗色 */ }
+}
+
+// 监听主题变化（IDEA 在运行时切换主题会触发 body 样式变更）
+new MutationObserver(applyIDETheme).observe(document.body, {
+    attributes: true,
+    attributeFilter: ['style', 'class']
 });
 
 
@@ -1586,3 +1615,4 @@ function reviewCopyResult() {
         setTimeout(() => { btn.innerHTML = orig; }, 2000);
     });
 }
+
