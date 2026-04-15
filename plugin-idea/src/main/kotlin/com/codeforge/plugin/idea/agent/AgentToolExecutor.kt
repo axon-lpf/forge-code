@@ -6,11 +6,12 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectRootManager
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapi.wm.ToolWindowManager
 import com.google.gson.Gson
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Agent 工具执行器
@@ -26,6 +27,19 @@ object AgentToolExecutor {
 
     private val log = logger<AgentToolExecutor>()
     private val gson = Gson()
+
+    /**
+     * 当前 Agent 任务 ID（线程局部变量）
+     * AgentService.runAgent() 开始时设置，结束时清除。
+     * writeFile() 读取此 ID 决定是否进入"收集模式"（多文件队列）。
+     */
+    var currentTaskId: String? = null
+
+    /**
+     * P2-9：当前 Checkpoint ID（与 currentTaskId 同生命周期）
+     * writeFile() 调用时先调 CheckpointManager.recordSnapshot 保存原始内容。
+     */
+    var currentCheckpointId: String? = null
 
     /** 工具调用结果 */
     data class ToolResult(
@@ -174,24 +188,62 @@ object AgentToolExecutor {
         }
     }
 
-    /** 写入文件（Inline Diff：编辑器内高亮显示变更，用户可 Accept/Reject） */
+    /**
+     * 写入文件
+     *
+     * 两种模式：
+     *  - Agent 模式（currentTaskId != null）：收集到多文件队列，任务完成后统一展示确认面板
+     *  - 手动/单次模式（currentTaskId == null）：立即展示 Inline Diff 或创建新文件（原有行为）
+     */
     fun writeFile(project: Project, relativePath: String, content: String): ToolResult {
         if (relativePath.isBlank()) return ToolResult("write_file", false, "", "路径不能为空")
         return try {
             val root = projectRoot(project) ?: return ToolResult("write_file", false, "", "找不到项目根目录")
             val existingFile = root.findFileByRelativePath(relativePath)
+            val taskId = currentTaskId
 
-            if (existingFile != null) {
-                // 已有文件 → Inline Diff（编辑器内高亮）
+            if (taskId != null) {
+                // ── Agent 多文件队列模式：收集 patch，不弹窗 ────────────────
+                val originalContent = if (existingFile != null) {
+                    ReadAction.compute<String, Exception> {
+                        String(existingFile.contentsToByteArray(), Charsets.UTF_8)
+                    }
+                } else ""
+
+                // P2-9：在写入前，将原始内容记录到 CheckpointManager
+                val cpId = currentCheckpointId
+                if (cpId != null) {
+                    CheckpointManager.recordSnapshot(
+                        checkpointId  = cpId,
+                        relativePath  = relativePath,
+                        originalContent = if (existingFile != null) originalContent else null
+                    )
+                }
+
+                val patch = com.codeforge.plugin.idea.diff.MultiFileDiffManager.FilePatch(
+                    relativePath    = relativePath,
+                    originalContent = originalContent,
+                    newContent      = content,
+                    isNewFile       = (existingFile == null)
+                )
+                com.codeforge.plugin.idea.diff.MultiFileDiffManager.addPatch(taskId, patch)
+
+                log.info("writeFile [队列模式]: 收集 patch [$relativePath]（task=$taskId）")
+                ToolResult("write_file", true,
+                    "✅ 已将 [$relativePath] 加入变更队列，Agent 任务完成后将统一展示确认面板")
+
+            } else if (existingFile != null) {
+                // ── 手动模式（已有文件）：立即显示 Inline Diff ───────────────
                 ApplicationManager.getApplication().invokeLater {
                     com.codeforge.plugin.idea.diff.InlineDiffManager.showInlineDiff(
                         project, existingFile, content
                     )
                 }
                 ToolResult("write_file", true, "✅ 已在编辑器中显示 Inline Diff，等待用户确认: $relativePath")
+
             } else {
-                // 新文件 → 通过 CodeApplyManager 创建
-                val lang = relativePath.substringAfterLast('.', "")
+                // ── 手动模式（新文件）：CodeApplyManager 创建 ─────────────────
+                val lang     = relativePath.substringAfterLast('.', "")
                 val fileName = relativePath.substringAfterLast('/')
                 ApplicationManager.getApplication().invokeLater {
                     com.codeforge.plugin.idea.util.CodeApplyManager.applyCode(
@@ -222,10 +274,33 @@ object AgentToolExecutor {
         }
     }
 
-    /** 代码搜索（使用 Java File.walkTopDown，不依赖外部 ripgrep） */
+    /**
+     * T23：代码搜索增强版
+     *
+     * 优先调用 CodebaseSearcher（PSI 类名/方法名语义搜索）；
+     * 若关键词看起来是普通字符串搜索（含空格或特殊符号），则直接走 grep。
+     */
     fun searchCode(project: Project, keyword: String, filePattern: String?): ToolResult {
         if (keyword.isBlank()) return ToolResult("search_code", false, "", "关键词不能为空")
         return try {
+            // 判断是否适合走 PSI 语义搜索（单词、无空格、无通配符）
+            val isPsiCandidate = filePattern == null &&
+                keyword.length >= 2 &&
+                !keyword.contains(' ') &&
+                !keyword.contains('*') &&
+                !keyword.contains('"')
+
+            if (isPsiCandidate) {
+                // 优先 PSI 语义搜索
+                val psiResults = com.codeforge.plugin.idea.util.CodebaseSearcher
+                    .searchByName(project, keyword, limit = 40)
+                if (psiResults.isNotEmpty()) {
+                    val text = com.codeforge.plugin.idea.util.CodebaseSearcher.formatResults(psiResults)
+                    return ToolResult("search_code", true, "找到 ${psiResults.size} 处匹配（PSI 语义搜索）：\n$text")
+                }
+            }
+
+            // 降级：grep 文件内容逐行搜索
             val root = projectRoot(project) ?: return ToolResult("search_code", false, "", "找不到项目根目录")
             val rootPath = root.path
             val results = mutableListOf<String>()
@@ -258,27 +333,120 @@ object AgentToolExecutor {
     }
 
     /**
-     * 在 IDE 内置终端执行命令
-     * ⚠️ 安全提示：命令执行前会通过 UI 回调让用户确认
+     * 真实执行 shell 命令并捕获输出，返回给 LLM 作为工具结果。
+     *
+     * 执行流程：
+     *  1. 危险命令黑名单校验（直接拒绝，不弹框）
+     *  2. 弹出用户确认对话框（EDT，阻塞等待用户决定）
+     *  3. ProcessBuilder 真实执行命令（工作目录 = 项目根目录）
+     *  4. 捕获 stdout + stderr（合并流），最多 60 秒 / 8000 字符
+     *  5. 将完整输出封装为 ToolResult 返回给 LLM
+     *
+     * 安全机制：
+     *  - 黑名单：rm -rf /、del /f /s、format c:、shutdown 等
+     *  - 用户确认：每次执行前弹窗（除非设置中关闭）
+     *  - 输出截断：超过 8000 字符时截断并提示
+     *  - 超时保护：60 秒后强制终止进程
      */
     fun runTerminal(project: Project, command: String): ToolResult {
-        // 安全校验：拒绝明显危险命令
-        val dangerous = listOf("rm -rf", "del /f", "format", "shutdown", "reboot", "> /dev/", "DROP TABLE")
-        for (d in dangerous) {
-            if (command.lowercase().contains(d.lowercase())) {
-                return ToolResult("run_terminal", false, "", "⛔ 拒绝执行危险命令: $command")
+        if (command.isBlank()) return ToolResult("run_terminal", false, "", "命令不能为空")
+
+        // ── 1. 危险命令黑名单（直接拒绝，不弹确认框）──────────────────────
+        val dangerousPatterns = listOf(
+            "rm -rf /", "rm -rf ~",
+            "del /f /s /q c:\\", "del /f /s /q d:\\",
+            "format c:", "format d:",
+            "shutdown /s", "shutdown -s",
+            "reboot", "halt",
+            ":(){:|:&};:",          // fork bomb
+            "> /dev/sda", "> /dev/sdb"
+        )
+        for (pattern in dangerousPatterns) {
+            if (command.lowercase().contains(pattern.lowercase())) {
+                log.warn("Agent runTerminal: 拒绝危险命令 [$command]")
+                return ToolResult("run_terminal", false, "",
+                    "⛔ 拒绝执行危险命令（命中黑名单规则「$pattern」）")
             }
         }
+
+        // ── 2. 用户确认对话框（EDT 阻塞）────────────────────────────────────
+        var userConfirmed = false
+        ApplicationManager.getApplication().invokeAndWait {
+            val result = Messages.showYesNoDialog(
+                project,
+                "Agent 请求执行以下终端命令：\n\n    ${command}\n\n是否允许执行？",
+                "CodeForge — 命令执行确认",
+                "允许执行",
+                "拒绝",
+                Messages.getWarningIcon()
+            )
+            userConfirmed = (result == Messages.YES)
+        }
+        if (!userConfirmed) {
+            log.info("Agent runTerminal: 用户拒绝执行命令 [$command]")
+            return ToolResult("run_terminal", false, "", "用户拒绝执行该命令")
+        }
+
+        // ── 3. 真实执行 ───────────────────────────────────────────────────────
+        log.info("Agent runTerminal: 开始执行命令 [$command]")
         return try {
-            // 通过 IDE Terminal 执行
-            ApplicationManager.getApplication().invokeLater {
-                val terminalManager = ToolWindowManager.getInstance(project).getToolWindow("Terminal")
-                terminalManager?.activate(null)
+            val workDir = project.basePath?.let { File(it) }
+                ?: File(System.getProperty("user.home"))
+
+            val isWindows = System.getProperty("os.name")
+                .lowercase().contains("win")
+            val processCmd = if (isWindows) listOf("cmd.exe", "/c", command)
+                             else           listOf("bash", "-c", command)
+
+            val process = ProcessBuilder(processCmd)
+                .directory(workDir)
+                .redirectErrorStream(true)   // stderr 合并到 stdout
+                .start()
+
+            // ── 4. 捕获输出（最多 60s / 8000 字符）─────────────────────────
+            val outputBuilder = StringBuilder()
+            val deadline = System.currentTimeMillis() + 60_000L
+            var truncated = false
+
+            process.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                while (System.currentTimeMillis() < deadline) {
+                    val line = reader.readLine() ?: break
+                    outputBuilder.appendLine(line)
+                    if (outputBuilder.length > 8000) {
+                        truncated = true
+                        break
+                    }
+                }
             }
-            ToolResult("run_terminal", true,
-                "✅ 命令已发送到终端: `$command`\n请在 IDE 终端查看执行结果")
+
+            // 等待进程结束（最多再等 5 秒）
+            val finished = process.waitFor(5, TimeUnit.SECONDS)
+            if (!finished) process.destroyForcibly()
+
+            val exitCode = try { process.exitValue() } catch (_: Exception) { -1 }
+            val rawOutput = outputBuilder.toString().trimEnd()
+            val output = if (truncated) "$rawOutput\n\n... (输出超过 8000 字符，已截断)" else rawOutput
+            val displayOutput = output.ifBlank { "(命令无输出)" }
+
+            log.info("Agent runTerminal: 命令执行完毕，exit=$exitCode，输出 ${output.length} 字符")
+
+            if (exitCode == 0) {
+                ToolResult(
+                    tool    = "run_terminal",
+                    success = true,
+                    output  = "✅ 命令执行成功（exit code: 0）\n\n```\n\$ $command\n$displayOutput\n```"
+                )
+            } else {
+                ToolResult(
+                    tool    = "run_terminal",
+                    success = false,
+                    output  = "❌ 命令执行失败（exit code: $exitCode）\n\n```\n\$ $command\n$displayOutput\n```",
+                    error   = "exit code: $exitCode"
+                )
+            }
         } catch (e: Exception) {
-            ToolResult("run_terminal", false, "", "终端执行失败: ${e.message}")
+            log.error("Agent runTerminal: 执行异常", e)
+            ToolResult("run_terminal", false, "", "命令执行异常: ${e.message}")
         }
     }
 

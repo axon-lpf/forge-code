@@ -1,5 +1,6 @@
 package com.codeforge.plugin.idea.agent
 
+import com.codeforge.plugin.idea.diff.MultiFileDiffManager
 import com.codeforge.plugin.idea.service.LlmService
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
@@ -30,7 +31,8 @@ object AgentService {
         val type: StepType,
         val content: String,
         val toolName: String? = null,
-        val toolResult: String? = null
+        val toolResult: String? = null,
+        val toolInput: String? = null   // T10：工具调用的参数摘要（用于 UI 卡片展示）
     )
 
     enum class StepType {
@@ -59,49 +61,83 @@ object AgentService {
      * Agent 模式执行
      * LLM 可以调用工具，自动多轮循环
      *
-     * @param project       当前项目
-     * @param userMessage   用户输入
-     * @param sessionHistory 历史消息
-     * @param onStep        每个执行步骤的回调
-     * @param onToken       流式 token 回调
-     * @param onDone        完成回调
-     * @param onError       错误回调
+     * @param project            当前项目
+     * @param userMessage        用户输入
+     * @param sessionHistory     历史消息
+     * @param onStep             每个执行步骤的回调
+     * @param onThinkingToken    T10：THINKING 阶段实时 token 回调（用于 UI 思考气泡流式显示）
+     * @param onToken            最终回复流式 token 回调
+     * @param onDone             完成回调
+     * @param onError            错误回调
      */
     fun runAgent(
         project: Project,
         userMessage: String,
         sessionHistory: List<Map<String, Any>>,
         onStep: (AgentStep) -> Unit,
+        onThinkingToken: (String) -> Unit = {},  // T10：思考阶段实时 token
         onToken: (String) -> Unit,
         onDone: () -> Unit,
-        onError: (Exception) -> Unit
+        onError: (Exception) -> Unit,
+        onCheckpointCreated: (List<Map<String, Any>>) -> Unit = {}  // P2-9：Checkpoint 列表推送回调
     ) {
         val llmService = LlmService.getInstance()
 
         cancelFlag.set(false)  // 重置取消标志
 
         Thread {
+            // ── 多文件队列：为本次 Agent 任务创建独立 session ──────────────
+            val taskId = MultiFileDiffManager.newTaskId()
+            MultiFileDiffManager.beginSession(taskId)
+            AgentToolExecutor.currentTaskId = taskId
+            log.info("AgentService: 开始 Agent 任务 [$taskId]")
+
+            // ── P2-9：任务开始前创建 Checkpoint ────────────────────────────
+            val checkpointId = CheckpointManager.createCheckpoint(project, userMessage)
+            AgentToolExecutor.currentCheckpointId = checkpointId
+            // 推送最新 Checkpoint 列表到 UI（底部时间线）
+            onCheckpointCreated(CheckpointManager.getSummaryList())
+
             try {
                 // 自动获取项目结构快照（根目录文件树）
                 val projectStructure = AgentToolExecutor.getProjectStructure(project)
 
+                // 采集当前编辑器上下文（当前文件、光标位置、PSI 类/方法名、选中代码）
+                val editorCtx = com.codeforge.plugin.idea.service.EditorContextProvider
+                    .getFormattedContext(project)
+
+                // P1-5：加载项目规则文件（.codeforge.md 或 ~/.codeforge/global.md）
+                val projectRules = com.codeforge.plugin.idea.util.ProjectRulesLoader.load(project)
+
                 // 构建带工具定义的 system 消息
                 val systemMsg = mapOf<String, Any>(
                     "role" to "system",
-                    "content" to """你是 CodeForge AI 助手，运行在 IntelliJ IDEA 中。
-你正在协助用户处理当前打开的代码仓库，项目名称：${project.name}
-
-== 项目文件结构 ==
-$projectStructure
-
-== 可用工具 ==
-${AgentToolExecutor.TOOL_DEFINITIONS}
+                    "content" to buildString {
+                        // P1-5：优先注入项目规则（放在最前面，确保 LLM 优先遵从）
+                        if (projectRules.isNotBlank()) {
+                            append("== 项目自定义规则（请严格遵守以下规则，优先级最高）==\n")
+                            append(projectRules)
+                            append("\n\n")
+                        }
+                        append("你是 CodeForge AI 助手，运行在 IntelliJ IDEA 中。\n")
+                        append("你正在协助用户处理当前打开的代码仓库，项目名称：${project.name}\n\n")
+                        append("== 项目文件结构 ==\n")
+                        append(projectStructure)
+                        if (editorCtx.isNotBlank()) {
+                            append("\n\n== 用户当前编辑器状态 ==\n")
+                            append(editorCtx)
+                        }
+                        append("\n\n== 可用工具 ==\n")
+                        append(AgentToolExecutor.TOOL_DEFINITIONS)
+                        append("""
 
 重要规则：
+- 用户正在查看的文件已在"当前编辑器状态"中提供，回答时优先参考该上下文
 - 回答任何关于项目的问题时，必须先用 read_file 或 list_files 工具读取实际文件内容，不要凭空猜测
 - 使用工具时严格按照格式，每次只调用一个工具，等待结果后再继续
 - 当任务完成时，直接给出最终回复，不要再调用工具
 - 不要重复调用同一个工具和路径，避免无限循环""")
+                    })
 
                 // 当前对话消息列表
                 val messages = mutableListOf<Map<String, Any>>()
@@ -118,13 +154,17 @@ ${AgentToolExecutor.TOOL_DEFINITIONS}
                     val done = AtomicBoolean(false)
                     var error: Exception? = null
 
-                    // 通知 UI：AI 正在思考
+                    // ── T10：通知 UI 进入 THINKING 阶段（显示思考气泡）──────
                     onStep(AgentStep(StepType.THINKING, ""))
 
-                    // 静默收集完整响应，判断有无工具调用
+                    // ── T10：流式收集 LLM 响应，同时通过 onThinkingToken 实时推送到思考气泡 ──
                     llmService.chatStream(
                         messages = messages,
-                        onToken = { token -> responseBuffer.append(token) },
+                        onToken = { token ->
+                            responseBuffer.append(token)
+                            // 实时推送思考 token 到 UI（window.appendThinkingToken）
+                            onThinkingToken(token)
+                        },
                         onDone = { done.set(true) },
                         onError = { ex -> error = ex; done.set(true) }
                     )
@@ -153,12 +193,15 @@ ${AgentToolExecutor.TOOL_DEFINITIONS}
                             val fullResult = if (result.success) result.output
                                             else "❌ 工具执行失败: ${result.error}"
 
-                            // 通知 UI：工具调用结果（在当前 thinking 消除后追加卡片）
+                            // ── T10：推送工具调用卡片数据（window.addToolCallCard）──
+                            // 从响应中提取工具参数摘要
+                            val toolInputSummary = extractToolInputSummary(response, result.tool)
                             onStep(AgentStep(
                                 StepType.TOOL_CALL,
                                 if (result.success) "success" else "error",
                                 toolName = result.tool,
-                                toolResult = result.output
+                                toolResult = result.output,
+                                toolInput = toolInputSummary  // T10：工具参数摘要
                             ))
 
                             messages.add(mapOf(
@@ -195,10 +238,18 @@ ${AgentToolExecutor.TOOL_DEFINITIONS}
                     }
                 }
 
+                // ── 任务完成：展示多文件变更确认面板 ──────────────────────────
+                AgentToolExecutor.currentTaskId = null
+                AgentToolExecutor.currentCheckpointId = null  // P2-9：清理 Checkpoint ID
+                MultiFileDiffManager.showReviewPanel(project, taskId)
+
                 onDone()
 
             } catch (e: Exception) {
                 log.error("Agent 执行异常", e)
+                // 异常时也要清理 taskId 和 checkpointId，避免泄露
+                AgentToolExecutor.currentTaskId = null
+                AgentToolExecutor.currentCheckpointId = null  // P2-9
                 onError(e)
             }
         }.start()
@@ -354,6 +405,39 @@ ${step.description}
     }
 
     // ==================== 私有辅助 ====================
+
+    /**
+     * T10：从 LLM 响应中提取指定工具调用的参数摘要，用于工具卡片展示。
+     *
+     * 例如 read_file → "src/main/Foo.kt"
+     *      write_file → "src/main/Bar.kt"
+     *      search_code → "keyword: xxx"
+     *      run_terminal → "git status"
+     */
+    private fun extractToolInputSummary(llmResponse: String, toolName: String): String {
+        return try {
+            val tagRegex = Regex("<tool_call>\\s*(\\{.*?\\})\\s*</tool_call>", RegexOption.DOT_MATCHES_ALL)
+            val matchJson = tagRegex.find(llmResponse)?.groupValues?.get(1) ?: return ""
+            val json = com.google.gson.Gson().fromJson(matchJson, Map::class.java)
+            when (toolName) {
+                "read_file"    -> json["path"] as? String ?: ""
+                "write_file"   -> json["path"] as? String ?: ""
+                "list_files"   -> json["path"] as? String ?: "."
+                "search_code"  -> {
+                    val kw = json["keyword"] as? String ?: ""
+                    val pattern = json["filePattern"] as? String
+                    if (pattern != null) "$kw ($pattern)" else kw
+                }
+                "run_terminal" -> {
+                    val cmd = json["command"] as? String ?: ""
+                    if (cmd.length > 80) cmd.take(80) + "…" else cmd
+                }
+                else -> ""
+            }
+        } catch (e: Exception) {
+            ""
+        }
+    }
 
     /**
      * 解析 LLM 生成的计划文本为步骤列表

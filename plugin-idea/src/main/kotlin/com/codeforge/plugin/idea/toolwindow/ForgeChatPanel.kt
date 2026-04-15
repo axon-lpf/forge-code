@@ -50,6 +50,12 @@ class CodeForgeChatPanel(private val project: Project) {
     /** 当前 AI 回复的 buffer（流结束后保存到会话） */
     private val currentAiBuffer = StringBuilder()
 
+    /**
+     * P2-10：待发送的图片列表（用户粘贴后暂存，随下一条消息发出）
+     * 格式：[{type: "image_url", image_url: {url: "data:image/...;base64,..."}}]
+     */
+    private val pendingImageParts = mutableListOf<Map<String, Any>>()
+
     init {
         if (JBCefApp.isSupported()) {
             initJcef()
@@ -159,6 +165,18 @@ class CodeForgeChatPanel(private val project: Project) {
 
             // 获取系统用户名
             val sysUser = System.getProperty("user.name") ?: "You"
+
+            // T15：加载项目规则文件信息，用于 UI 显示激活标识
+            val rulesInfo = com.codeforge.plugin.idea.util.ProjectRulesLoader.loadInfo(project)
+            val rulesLabel = if (rulesInfo != null) {
+                com.codeforge.plugin.idea.util.ProjectRulesLoader
+                    .getSourceDisplayName(rulesInfo.second)
+            } else ""
+
+            // P2-10：检测当前 Provider 是否支持 Vision
+            val visionSupported = com.codeforge.plugin.llm.provider.ProviderRegistry
+                .get(activeInfo.provider ?: "")?.supportsVision ?: false
+
             val initData = mapOf(
                 "backendOnline" to true,
                 "activeProvider" to (activeInfo.provider ?: ""),
@@ -168,7 +186,11 @@ class CodeForgeChatPanel(private val project: Project) {
                 "language" to settings.language,
                 "defaultMode" to settings.defaultMode,
                 "projectName" to (project.name),
-                "userName" to sysUser
+                "userName" to sysUser,
+                // T15：规则文件激活标识（空字符串表示无规则文件）
+                "rulesLabel" to rulesLabel,
+                // P2-10：Vision 支持标识
+                "visionSupported" to visionSupported
             )
             executeJS("window.onInit && window.onInit(${gson.toJson(initData)})")
         }
@@ -197,6 +219,7 @@ class CodeForgeChatPanel(private val project: Project) {
                 "deleteSession" -> handleDeleteSession(json)
                 "renameSession" -> handleRenameSession(json)
                 "getSessions"   -> handleGetSessions()
+                "exportSession" -> handleExportSession(json)
                 "searchFiles"    -> handleSearchFiles(json)
                 "readFileCtx"    -> handleReadFileCtx(json)
                 "applyCode"      -> handleApplyCode(json)
@@ -206,6 +229,14 @@ class CodeForgeChatPanel(private val project: Project) {
                 "executePlan"       -> handleExecutePlan(json)
                 "getChangedFiles"   -> handleGetChangedFiles()
                 "reviewCode"        -> handleReviewCode(json)
+                // T13：Agent 步骤可视化 Bridge 消息类型（JS 侧主动触发，当前为预留接口）
+                "AGENT_STEP_TOKEN"  -> { /* JS 侧发送 thinking token，当前由 Kotlin push 实现，此处 no-op */ }
+                "AGENT_TOOL_CARD"   -> { /* JS 侧发送工具卡片，当前由 Kotlin push 实现，此处 no-op */ }
+                // P2-9：Checkpoint 回滚
+                "rollbackCheckpoint" -> handleRollbackCheckpoint(json)
+                "getCheckpoints"     -> handleGetCheckpoints()
+                // P2-10：多模态图片输入
+                "imageInput"         -> handleImageInput(json)
                 else -> log.warn("未知 JS 消息类型: $type")
             }
         } catch (e: Exception) {
@@ -214,7 +245,7 @@ class CodeForgeChatPanel(private val project: Project) {
     }
 
     /** 处理发送消息（流式对话，带会话持久化） */
-        private fun handleSendMessage(json: Map<*, *>) {
+    private fun handleSendMessage(json: Map<*, *>) {
         val rawContent = json["content"] as? String ?: return
         val jsSessionId = json["sessionId"] as? String
 
@@ -243,11 +274,33 @@ class CodeForgeChatPanel(private val project: Project) {
             }
         currentSessionId = sid
 
-        // 保存用户消息
+        // 保存用户消息（纯文本，会话历史中只存文本）
         SessionManager.appendMessage(sid, "user", content)
 
         // 构建完整历史消息（含本次）
-        val messages = SessionManager.getMessages(sid)
+        val historyMessages = SessionManager.getMessages(sid)
+
+        // P2-10：如有待发送图片，将最后一条 user 消息的 content 替换为多模态数组
+        val imageParts = synchronized(pendingImageParts) {
+            val copy = pendingImageParts.toList()
+            pendingImageParts.clear()
+            copy
+        }
+        val messages: List<Map<String, Any>> = if (imageParts.isNotEmpty()) {
+            val contentParts = mutableListOf<Map<String, Any>>()
+            // 先放文本部分
+            if (content.isNotBlank()) {
+                contentParts.add(mapOf("type" to "text", "text" to content))
+            }
+            // 再放图片部分（已在 handleImageInput 中组装好）
+            contentParts.addAll(imageParts)
+            // 替换最后一条 user 消息
+            val withImage = historyMessages.dropLast(1).toMutableList()
+            withImage.add(mapOf("role" to "user", "content" to contentParts))
+            withImage
+        } else {
+            historyMessages
+        }
 
         // 重置 AI buffer
         currentAiBuffer.clear()
@@ -269,13 +322,19 @@ class CodeForgeChatPanel(private val project: Project) {
                     SessionManager.appendMessage(sid, "assistant", aiContent)
                 }
                 currentAiBuffer.clear()
-                // 通知 JS 更新会话标题
-                val summary = SessionManager.listSessions().find { it.id == sid }
-                if (summary != null) {
-                    val titleEscaped = summary.title.replace("\"", "\\\"")
-                    executeJS("window.onSessionTitleUpdate && window.onSessionTitleUpdate(\"$sid\", \"$titleEscaped\")")
-                }
                 executeJS("window.onStreamDone && window.onStreamDone()")
+                // T20：首条消息后异步 LLM 生成 3~5 字会话标题
+                val session = SessionManager.loadSession(sid)
+                if (session != null && session.title == session.messages
+                        .firstOrNull { it.role == "user" }?.content?.take(30)?.replace("\n", " ")) {
+                    generateSessionTitle(sid, content)
+                } else {
+                    val summary = SessionManager.listSessions().find { it.id == sid }
+                    if (summary != null) {
+                        val titleEscaped = summary.title.replace("\"", "\\\"")
+                        executeJS("window.onSessionTitleUpdate && window.onSessionTitleUpdate(\"$sid\", \"$titleEscaped\")")
+                    }
+                }
             },
             onError = { ex ->
                 currentAiBuffer.clear()
@@ -322,9 +381,12 @@ class CodeForgeChatPanel(private val project: Project) {
                 currentSessionId?.let {
                     SessionManager.updateSessionModel(it, activeInfo.provider ?: "", activeInfo.model ?: "")
                 }
+                // P2-10：切换模型后推送 Vision 支持状态
+                val newVisionSupported = com.codeforge.plugin.llm.provider.ProviderRegistry
+                    .get(activeInfo.provider ?: "")?.supportsVision ?: false
                 executeJS(
                     "window.onModelSwitched && window.onModelSwitched(" +
-                            "\"${activeInfo.provider}\", \"${activeInfo.model}\")"
+                            "\"${activeInfo.provider}\", \"${activeInfo.model}\", $newVisionSupported)"
                 )
                 ApplicationManager.getApplication().invokeLater {
                     project.messageBus.syncPublisher(ModelChangedListener.TOPIC)
@@ -348,7 +410,7 @@ class CodeForgeChatPanel(private val project: Project) {
         }
     }
 
-    /** 新建会话 */
+    /** 新建会话（T20：创建后执行 FIFO 清理，保持 ≤50 条） */
     private fun handleNewSession() {
         val activeInfo = llmService.getActiveInfo()
         val session = SessionManager.createSession(
@@ -357,6 +419,10 @@ class CodeForgeChatPanel(private val project: Project) {
         )
         currentSessionId = session.id
         currentAiBuffer.clear()
+        // T20：FIFO 清理，超过 50 条时删除最旧的
+        ApplicationManager.getApplication().executeOnPooledThread {
+            SessionManager.pruneOldSessions(maxCount = 50)
+        }
         executeJS("window.onNewSession && window.onNewSession(${gson.toJson(mapOf("sessionId" to session.id))})")
     }
 
@@ -422,10 +488,138 @@ class CodeForgeChatPanel(private val project: Project) {
         executeJS("window.onSessionList && window.onSessionList(${gson.toJson(response)})")
     }
 
-    /** 搜索项目文件（@引用触发） */
+    /**
+     * T20：异步调用 LLM 为会话生成 3~5 字标题
+     * 仅在首条 AI 回复完成后触发一次
+     *
+     * @param sessionId  会话 ID
+     * @param userMsg    用户的第一条消息（用于生成标题的上下文）
+     */
+    private fun generateSessionTitle(sessionId: String, userMsg: String) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val prompt = "请为以下对话内容生成一个简洁的标题，3到5个中文字，不加任何标点或说明，只输出标题本身：\n\n${userMsg.take(200)}"
+            val messages = listOf(mapOf("role" to "user", "content" to prompt))
+            val titleBuf = StringBuilder()
+            try {
+                llmService.chatStream(
+                    messages = messages,
+                    onToken = { token -> titleBuf.append(token) },
+                    onDone = {
+                        val title = titleBuf.toString()
+                            .trim()
+                            .replace("\n", "")
+                            .take(20)
+                            .ifBlank { "新会话" }
+                        SessionManager.renameSession(sessionId, title)
+                        val escaped = title.replace("\"", "\\\"")
+                        executeJS("window.onSessionTitleUpdate && window.onSessionTitleUpdate(\"$sessionId\", \"$escaped\")")
+                    },
+                    onError = { ex ->
+                        log.warn("会话标题生成失败: ${ex.message}")
+                        // 降级：保留首条消息截取的标题，直接推送
+                        val summary = SessionManager.listSessions().find { it.id == sessionId }
+                        if (summary != null) {
+                            val escaped = summary.title.replace("\"", "\\\"")
+                            executeJS("window.onSessionTitleUpdate && window.onSessionTitleUpdate(\"$sessionId\", \"$escaped\")")
+                        }
+                    }
+                )
+            } catch (ex: Exception) {
+                log.warn("generateSessionTitle 异常: ${ex.message}")
+            }
+        }
+    }
+
+    /**
+     * T21：导出会话为 Markdown 文件
+     * 将会话消息格式化为 Markdown 并写入用户 Downloads 目录
+     */
+    private fun handleExportSession(json: Map<*, *>) {
+        val sessionId = json["sessionId"] as? String ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val session = SessionManager.loadSession(sessionId) ?: run {
+                log.warn("导出失败：找不到会话 $sessionId")
+                return@executeOnPooledThread
+            }
+
+            // 生成 Markdown 内容
+            val sb = StringBuilder()
+            sb.appendLine("# ${session.title}")
+            sb.appendLine()
+            sb.appendLine("> 导出时间：${java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}")
+            if (session.model.isNotBlank()) {
+                sb.appendLine("> 模型：${session.provider} · ${session.model}")
+            }
+            sb.appendLine()
+            sb.appendLine("---")
+            sb.appendLine()
+
+            session.messages.forEach { msg ->
+                when (msg.role) {
+                    "user" -> {
+                        sb.appendLine("## 👤 用户")
+                        sb.appendLine()
+                        sb.appendLine(msg.content)
+                        sb.appendLine()
+                    }
+                    "assistant" -> {
+                        sb.appendLine("## 🔥 CodeForge")
+                        sb.appendLine()
+                        sb.appendLine(msg.content)
+                        sb.appendLine()
+                    }
+                }
+                sb.appendLine("---")
+                sb.appendLine()
+            }
+
+            // 写入文件：~/Downloads/codeforge-{title}-{timestamp}.md
+            val safeTitle = session.title
+                .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                .take(30)
+            val timestamp = System.currentTimeMillis()
+            val downloadsDir = java.io.File(System.getProperty("user.home"), "Downloads")
+                .also { it.mkdirs() }
+            val outFile = java.io.File(downloadsDir, "codeforge-$safeTitle-$timestamp.md")
+
+            try {
+                outFile.writeText(sb.toString(), Charsets.UTF_8)
+                val pathEscaped = outFile.absolutePath.replace("\\", "\\\\").replace("\"", "\\\"")
+                executeJS("window.onExportDone && window.onExportDone({filePath: \"$pathEscaped\"})")
+                log.info("会话已导出：${outFile.absolutePath}")
+            } catch (ex: Exception) {
+                log.error("导出会话失败: ${ex.message}", ex)
+            }
+        }
+    }
+
+    /**
+     * T24：搜索项目文件/类/方法（@ 引用触发）
+     * 优先调用 CodebaseSearcher PSI 语义搜索，降级为 FileContextProvider grep 搜索
+     */
     private fun handleSearchFiles(json: Map<*, *>) {
         val keyword = json["keyword"] as? String ?: ""
         ApplicationManager.getApplication().executeOnPooledThread {
+            // 优先 PSI 语义搜索（类名/文件名/方法名）
+            val psiResults = if (keyword.isNotBlank()) {
+                com.codeforge.plugin.idea.util.CodebaseSearcher
+                    .searchByName(project, keyword, limit = 20)
+                    .map { r ->
+                        mapOf(
+                            "path" to r.filePath,
+                            "name" to r.filePath.substringAfterLast('/').substringAfterLast('\\'),
+                            "display" to r.displayText,
+                            "kind" to r.kind.name
+                        )
+                    }
+            } else emptyList()
+
+            if (psiResults.isNotEmpty()) {
+                executeJS("window.onFileSearchResult && window.onFileSearchResult(${gson.toJson(psiResults)})")
+                return@executeOnPooledThread
+            }
+
+            // 降级：原有 FileContextProvider 文件 grep 搜索
             val results = com.codeforge.plugin.idea.service.FileContextProvider
                 .searchFiles(project, keyword, limit = 20)
             executeJS("window.onFileSearchResult && window.onFileSearchResult(${gson.toJson(results)})")
@@ -485,17 +679,32 @@ class CodeForgeChatPanel(private val project: Project) {
             project = project,
             userMessage = content,
             sessionHistory = history,
+            onCheckpointCreated = { checkpoints ->
+                // P2-9：将最新 Checkpoint 列表推送到 UI 时间线
+                val cpJson = gson.toJson(checkpoints)
+                executeJS("window.onCheckpointList && window.onCheckpointList($cpJson)")
+            },
             onStep = { step ->
                 // toolResult 可能含有文件内容（反引号、$、\），需要 Base64 编码避免 JS 注入问题
                 val safeResult = java.util.Base64.getEncoder()
                     .encodeToString((step.toolResult ?: "").toByteArray(Charsets.UTF_8))
+                // T10：toolInput 参数摘要同样 Base64 编码，安全传递
+                val safeInput = java.util.Base64.getEncoder()
+                    .encodeToString((step.toolInput ?: "").toByteArray(Charsets.UTF_8))
                 val stepJson = gson.toJson(mapOf(
                     "type" to step.type.name,
                     "content" to step.content,
                     "toolName" to (step.toolName ?: ""),
-                    "toolResultB64" to safeResult   // Base64 编码的工具结果
+                    "toolResultB64" to safeResult,   // Base64 编码的工具结果
+                    "toolInputB64" to safeInput       // T10：Base64 编码的工具参数摘要
                 ))
                 executeJS("window.onAgentStep && window.onAgentStep($stepJson)")
+            },
+            // T10：THINKING 阶段实时 token → 调用 window.appendThinkingToken
+            onThinkingToken = { token ->
+                val b64 = java.util.Base64.getEncoder()
+                    .encodeToString(token.toByteArray(Charsets.UTF_8))
+                executeJS("window.appendThinkingToken && window.appendThinkingToken('$b64')")
             },
             onToken = { token ->
                 currentAiBuffer.append(token)
@@ -509,10 +718,14 @@ class CodeForgeChatPanel(private val project: Project) {
                 val aiContent = currentAiBuffer.toString()
                 if (aiContent.isNotBlank()) SessionManager.appendMessage(sid, "assistant", aiContent)
                 currentAiBuffer.clear()
+                // T13：确保 Agent 面板在任务完成时切换为 done 状态
+                executeJS("window.finalizeAgentPanel && window.finalizeAgentPanel()")
                 executeJS("window.onStreamDone && window.onStreamDone()")
             },
             onError = { ex ->
                 currentAiBuffer.clear()
+                // T13：出错时也关闭 Agent 面板
+                executeJS("window.finalizeAgentPanel && window.finalizeAgentPanel()")
                 val msg = (ex.message ?: "未知错误").replace("\"","\\\"").replace("\n","\\n")
                 executeJS("window.onError && window.onError(\"$msg\")")
             }
@@ -645,6 +858,60 @@ class CodeForgeChatPanel(private val project: Project) {
                 }
             )
         }
+    }
+
+    // ==================== P2-9：Checkpoint 回滚 ====================
+
+    /**
+     * 执行 Checkpoint 回滚
+     * JS 发送: {type: "rollbackCheckpoint", checkpointId: "xxx"}
+     */
+    private fun handleRollbackCheckpoint(json: Map<*, *>) {
+        val checkpointId = json["checkpointId"] as? String ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val success = com.codeforge.plugin.idea.agent.CheckpointManager.restore(project, checkpointId)
+            if (success) {
+                executeJS("window.onRollbackDone && window.onRollbackDone({checkpointId: \"$checkpointId\", success: true})")
+                log.info("P2-9: Checkpoint [$checkpointId] 回滚成功")
+            } else {
+                executeJS("window.onRollbackDone && window.onRollbackDone({checkpointId: \"$checkpointId\", success: false})")
+                log.warn("P2-9: Checkpoint [$checkpointId] 回滚失败")
+            }
+        }
+    }
+
+    /**
+     * 获取全部 Checkpoint 列表（JS 请求时主动拉取）
+     */
+    private fun handleGetCheckpoints() {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val checkpoints = com.codeforge.plugin.idea.agent.CheckpointManager.getSummaryList()
+            val cpJson = gson.toJson(checkpoints)
+            executeJS("window.onCheckpointList && window.onCheckpointList($cpJson)")
+        }
+    }
+
+    // ==================== P2-10：多模态图片输入 ====================
+
+    /**
+     * 接收 JS 侧传来的 base64 图片，暂存到 pendingImageParts
+     * 等下一条 sendMessage 时拼入消息 content 数组
+     *
+     * 消息格式符合 OpenAI Vision API：
+     * {type: "image_url", image_url: {url: "data:image/png;base64,..."}}
+     */
+    private fun handleImageInput(json: Map<*, *>) {
+        val base64 = json["base64"] as? String ?: return
+        val mimeType = (json["mimeType"] as? String)?.takeIf { it.isNotBlank() } ?: "image/png"
+        val dataUrl = "data:$mimeType;base64,$base64"
+        val imagePart = mapOf(
+            "type" to "image_url",
+            "image_url" to mapOf("url" to dataUrl)
+        )
+        synchronized(pendingImageParts) {
+            pendingImageParts.add(imagePart)
+        }
+        log.info("P2-10: 收到图片输入，mimeType=$mimeType，size=${base64.length} chars (base64)")
     }
 
     // ==================== 工具方法 ====================

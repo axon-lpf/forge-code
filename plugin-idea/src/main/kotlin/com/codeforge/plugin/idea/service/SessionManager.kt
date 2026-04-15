@@ -142,6 +142,24 @@ object SessionManager {
         removeFromIndex(sessionId)
     }
 
+    /**
+     * T20：FIFO 清理 — 当会话总数超过 maxCount 时，删除最旧的会话
+     * 默认上限 50 条
+     */
+    fun pruneOldSessions(maxCount: Int = 50) {
+        val index = loadIndex().toMutableList()
+        if (index.size <= maxCount) return
+        // 按 updatedAt 升序，最旧的在前
+        val sorted = index.sortedBy { it.updatedAt }
+        val toDelete = sorted.take(index.size - maxCount)
+        toDelete.forEach { s ->
+            sessionFile(s.id).delete()
+        }
+        val remaining = index.filter { s -> toDelete.none { it.id == s.id } }
+        saveIndex(remaining)
+        log.info("会话 FIFO 清理：删除 ${toDelete.size} 条旧会话，保留 ${remaining.size} 条")
+    }
+
     /** 清空会话消息（保留会话元数据） */
     fun clearSession(sessionId: String) {
         val session = loadSession(sessionId) ?: return

@@ -14,7 +14,10 @@ const state = {
     // @文件引用
     ctxFiles: [],              // 已引用文件列表 [{path, name, content}]
     atSearching: false,        // 是否正在 @ 搜索
-    atStartPos: -1             // @ 符号在输入框中的位置
+    atStartPos: -1,            // @ 符号在输入框中的位置
+    // P2-10：多模态图片
+    visionSupported: false,    // 当前模型是否支持 Vision
+    pendingImages: []          // 待发送的图片列表 [{base64, mimeType, dataUrl}]
 };
 
 // ==================== 初始化回调（由 Kotlin 调用）====================
@@ -38,6 +41,19 @@ window.onInit = function(data) {
     }
     if (data.defaultMode) {
         selectMode(data.defaultMode);
+    }
+    // T15：显示项目规则文件激活标识
+    const rulesBadge = document.getElementById('rules-badge');
+    const rulesBadgeLabel = document.getElementById('rules-badge-label');
+    if (data.rulesLabel && data.rulesLabel.trim()) {
+        if (rulesBadgeLabel) rulesBadgeLabel.textContent = data.rulesLabel + ' 已加载';
+        if (rulesBadge) rulesBadge.style.display = 'flex';
+    } else {
+        if (rulesBadge) rulesBadge.style.display = 'none';
+    }
+    // P2-10：Vision 能力初始化
+    if (typeof data.visionSupported !== 'undefined') {
+        updateVisionSupport(data.visionSupported);
     }
 };
 
@@ -102,8 +118,12 @@ window.onAutoRetry = function(failedProvider, newProvider, newModel) {
 };
 
 /** 模型切换成功 */
-window.onModelSwitched = function(provider, model) {
+window.onModelSwitched = function(provider, model, visionSupported) {
     updateModelDisplay(provider, model);
+    // P2-10：切换模型后更新 Vision 支持状态
+    if (typeof visionSupported !== 'undefined') {
+        updateVisionSupport(visionSupported);
+    }
 };
 
 /** 新建会话 — Kotlin 创建后通知 JS */
@@ -166,6 +186,44 @@ window.onSessionTitleUpdate = function(sessionId, title) {
 let agentSummaryEl = null;
 let agentToolItems = [];  // [{tool, summary}]
 
+/**
+ * T10/T12：THINKING 阶段实时 token 追加到思考气泡（Base64 编码）
+ * 由 Kotlin 侧 onThinkingToken 回调触发
+ */
+window.appendThinkingToken = function(b64Token) {
+    try {
+        const token = decodeURIComponent(escape(atob(b64Token)));
+        // T12：过滤 <tool_call> XML 标签及其内容，只展示自然语言思考部分
+        if (/<tool_call>/.test(token) || token.trim().startsWith('{')) return;
+        const thinkingEl = document.querySelector('.thinking-bubble .thinking-text');
+        if (thinkingEl) {
+            thinkingEl.textContent += token;
+            // 只展示最新 400 字符，保持气泡紧凑
+            if (thinkingEl.textContent.length > 400) {
+                thinkingEl.textContent = '…' + thinkingEl.textContent.slice(-380);
+            }
+        }
+    } catch(e) { /* 解码失败忽略 */ }
+};
+
+/**
+ * T12：工具调用卡片渲染入口（正式命名的对外接口）
+ * stepJson 结构：{ toolName, status('success'|'error'), toolResultB64, toolInputB64 }
+ * 此函数是 onAgentStep TOOL_CALL 分支的命名别名，保持接口规范一致性。
+ */
+window.addToolCallCard = function(stepJson) {
+    try {
+        const step = (typeof stepJson === 'string') ? JSON.parse(stepJson) : stepJson;
+        const toolResult = step.toolResultB64
+            ? decodeURIComponent(escape(atob(step.toolResultB64))) : (step.toolResult || '');
+        const toolInput = step.toolInputB64
+            ? decodeURIComponent(escape(atob(step.toolInputB64))) : '';
+        const success = (step.status || step.content) === 'success';
+        removeThinking();
+        updateAgentPanel(step.toolName, success, toolResult, toolInput);
+    } catch(e) { console.warn('addToolCallCard error', e); }
+};
+
 /** Agent 步骤通知 */
 window.onAgentStep = function(step) {
     switch (step.type) {
@@ -179,7 +237,11 @@ window.onAgentStep = function(step) {
             const toolResult = step.toolResultB64
                 ? decodeURIComponent(escape(atob(step.toolResultB64)))
                 : (step.toolResult || '');
-            updateAgentPanel(step.toolName, step.content === 'success', toolResult);
+            // T10：toolInputB64 是工具参数摘要（Base64 编码）
+            const toolInput = step.toolInputB64
+                ? decodeURIComponent(escape(atob(step.toolInputB64)))
+                : '';
+            updateAgentPanel(step.toolName, step.content === 'success', toolResult, toolInput);
             break;
         case 'RESPONSE':
             // 最终回复来临：先完成面板（变绿），再移除 thinking，然后等待 token 流
@@ -221,9 +283,10 @@ let agentPanelItems = [];
 // agentStartTime 记录 Agent 开始时间，用于计算耗时
 let agentStartTime = 0;
 
-function updateAgentPanel(toolName, success, result) {
+// T10：updateAgentPanel 新增 toolInput 参数（工具参数摘要，优先用于 detail 显示）
+function updateAgentPanel(toolName, success, result, toolInput) {
     if (agentPanelItems.length === 0) agentStartTime = Date.now();
-    agentPanelItems.push({ tool: toolName, success, result });
+    agentPanelItems.push({ tool: toolName, success, result, toolInput });
 
     if (!agentPanelEl) {
         // 外层与 AI 消息对齐（含 🔥 头像 + 模型名 + 时间戳）
@@ -245,12 +308,14 @@ function updateAgentPanel(toolName, success, result) {
                     <span class="cm-meta">${timeStr}${modelName ? ' · ' + providerName + ' ' + modelName : ''}</span>
                 </div>
                 <div class="agent-panel running" id="${panelId}-panel">
-                    <div class="ap-collapse-title">
+                    <div class="ap-collapse-title" id="${panelId}-title">
                         <span class="ap-spinner"></span>
-                        <span class="ap-collapse-label">文件读取</span>
+                        <span class="ap-collapse-label">工具调用</span>
                     </div>
-                    <div class="ap-thinking-text" id="${panelId}-thinking">让我先探索一下项目结构。</div>
-                    <div class="ap-rows" id="${panelId}-rows"></div>
+                    <div class="ap-panel-body" id="${panelId}-body">
+                        <div class="ap-thinking-text" id="${panelId}-thinking"></div>
+                        <div class="ap-rows" id="${panelId}-rows"></div>
+                    </div>
                 </div>
             </div>`;
         document.getElementById('messages').appendChild(wrap);
@@ -258,12 +323,15 @@ function updateAgentPanel(toolName, success, result) {
     }
 
     // 累加新的操作行
-    _appendToolRow(toolName, success, result);
+    _appendToolRow(toolName, success, result, toolInput);
     scrollToBottom();
 }
 
-/** 在面板内追加一条操作行 */
-function _appendToolRow(toolName, success, result) {
+/**
+ * T10：在面板内追加一条工具调用卡片行
+ * toolInput 优先作为摘要展示（路径/命令），result 折叠在展开区
+ */
+function _appendToolRow(toolName, success, result, toolInput) {
     const panelId = agentPanelEl.id;
     const rowsEl = document.getElementById(panelId + '-rows');
     if (!rowsEl) return;
@@ -272,17 +340,21 @@ function _appendToolRow(toolName, success, result) {
     const label = TOOL_LABELS[toolName] || toolName;
     const rowId = panelId + '-row-' + agentPanelItems.length;
 
-    // 提取路径/关键词
+    // T10：优先使用 toolInput 作为 detail，降级解析 result 首行
     let detail = '';
-    try {
-        // result 通常是 "### path\n```\ncontent\n```" 或文件列表
-        const firstLine = (result || '').split('\n')[0].replace(/^###\s*/, '').trim();
-        detail = firstLine.length > 60 ? firstLine.slice(0, 60) + '…' : firstLine;
-    } catch(e) { detail = ''; }
+    if (toolInput && toolInput.trim()) {
+        detail = toolInput.trim().length > 70 ? toolInput.trim().slice(0, 70) + '…' : toolInput.trim();
+    } else {
+        try {
+            // result 通常是 "### path\n```\ncontent\n```" 或文件列表
+            const firstLine = (result || '').split('\n')[0].replace(/^###\s*/, '').trim();
+            detail = firstLine.length > 60 ? firstLine.slice(0, 60) + '…' : firstLine;
+        } catch(e) { detail = ''; }
+    }
 
     // 统计行数
     const lineCount = (result || '').split('\n').length;
-    const lineInfo = lineCount > 3 ? ` <span class="ap-row-lines">引用行数: 1:${lineCount}</span>` : '';
+    const lineInfo = lineCount > 3 ? ` <span class="ap-row-lines">${lineCount} 行</span>` : '';
 
     const statusIcon = success
         ? '<span class="ap-row-ok">✓</span>'
@@ -293,24 +365,26 @@ function _appendToolRow(toolName, success, result) {
     row.id = rowId;
     row.innerHTML = `
         <div class="ap-row-header" onclick="toggleApRow('${rowId}')">
+            <span class="ap-row-icon">${icon}</span>
             ${statusIcon}
             <span class="ap-row-label">${label}</span>
             <span class="ap-row-detail">${escapeHtml(detail)}${lineInfo}</span>
             <span class="ap-row-arrow">∨</span>
         </div>
-        <div class="ap-row-body" style="display:none">
+        <div class="ap-row-body">
             <pre class="ap-row-content">${escapeHtml((result||'').split('\n').slice(0,20).join('\n'))}</pre>
         </div>`;
     rowsEl.appendChild(row);
 }
 
+// T11：改用 CSS class 切换驱动折叠动画（max-height transition）
 function toggleApRow(rowId) {
     const row = document.getElementById(rowId);
     if (!row) return;
     const body = row.querySelector('.ap-row-body');
     const arrow = row.querySelector('.ap-row-arrow');
-    const isOpen = body.style.display !== 'none';
-    body.style.display = isOpen ? 'none' : 'block';
+    const isOpen = body.classList.contains('open');
+    body.classList.toggle('open', !isOpen);
     arrow.textContent = isOpen ? '∨' : '∧';
 }
 
@@ -328,19 +402,19 @@ function finalizeAgentPanel() {
     if (collapseTitle) {
         const panelId = agentPanelEl.id;
         collapseTitle.onclick = () => {
-            const rows = document.getElementById(panelId + '-rows');
-            const thinking = document.getElementById(panelId + '-thinking');
+            // T11：改用 .ap-panel-body + .collapsed 类驱动折叠动画
+            const body = document.getElementById(panelId + '-body');
             const arrow = collapseTitle.querySelector('.ap-collapse-arrow');
-            const isOpen = rows && rows.style.display !== 'none';
-            if (rows) rows.style.display = isOpen ? 'none' : 'block';
-            if (thinking) thinking.style.display = isOpen ? 'none' : 'block';
-            if (arrow) arrow.textContent = isOpen ? '∨' : '∧';
+            if (body) {
+                const collapsed = body.classList.toggle('collapsed');
+                if (arrow) arrow.textContent = collapsed ? '∧' : '∨';
+            }
         };
         collapseTitle.style.cursor = 'pointer';
         collapseTitle.innerHTML = `
             <span class="ap-done-check">✓</span>
-            <span class="ap-collapse-label">文件读取</span>
-            <span class="ap-collapse-meta">${count} 个操作${elapsed ? ' · ' + elapsed : ''}</span>
+            <span class="ap-collapse-label">工具调用</span>
+            <span class="ap-collapse-meta">${count} 次操作${elapsed ? ' · ' + elapsed : ''}</span>
             <span class="ap-collapse-arrow">∨</span>`;
     }
     agentPanelEl.classList.remove('running');
@@ -349,6 +423,9 @@ function finalizeAgentPanel() {
     agentPanelItems = [];
     scrollToBottom();
 }
+
+// T13：对外暴露 finalizeAgentPanel，供 Kotlin 侧在 onDone/onError 时调用
+window.finalizeAgentPanel = finalizeAgentPanel;
 
 function toggleAgentPanel(panelId) {
     const detail = document.getElementById('ap-detail-' + panelId);
@@ -519,7 +596,8 @@ function selectMode(mode) {
 function sendMessage() {
     const input = document.getElementById('user-input');
     let content = input.value.trim();
-    if (!content || state.isStreaming) return;
+    // P2-10：有图片时允许纯图片发送（content 可为空）
+    if ((!content && pendingImages.length === 0) || state.isStreaming) return;
 
     let finalContent = content;
     if (state.ctxFiles.length > 0) {
@@ -528,6 +606,9 @@ function sendMessage() {
         ).join('\n\n');
         finalContent = `以下是用户引用的项目文件，请结合这些内容回答：\n\n${ctxBlock}\n\n---\n\n用户问题：${content}`;
     }
+
+    // P2-10：收集待发送图片，发送后清空预览
+    const imagesToSend = pendingImages.slice();
 
     input.value = '';
     autoResize(input);
@@ -538,11 +619,21 @@ function sendMessage() {
     tagsEl.innerHTML = '';
     tagsEl.style.display = 'none';
 
+    // P2-10：清空图片预览区
+    clearImagePreviews();
+
     document.getElementById('welcome-screen').style.display = 'none';
     document.getElementById('messages').style.display = 'flex';
 
-    addUserMessage(content);
+    addUserMessage(content, imagesToSend);
     showThinking();
+
+    // P2-10：若有图片，先通知 Kotlin 侧缓存图片内容，再发送文本消息
+    if (imagesToSend.length > 0) {
+        imagesToSend.forEach(img => {
+            bridge.send({ type: 'imageInput', base64: img.base64, mimeType: img.mimeType });
+        });
+    }
 
     // Chat 普通聊天 → 直接发送，纯对话无 Agent 能力
     if (state.chatBigMode === 'chat') {
@@ -603,6 +694,87 @@ function cancelMessage() {
 
 function newSession() {
     bridge.send({ type: 'newSession' });
+}
+
+// ==================== P2-10：多模态图片输入 ====================
+
+/**
+ * 当前待发送的图片列表
+ * 每项格式: { base64: string, mimeType: string, dataUrl: string }
+ */
+const pendingImages = [];
+
+/**
+ * 处理 textarea 粘贴事件，检测图片并生成缩略图预览
+ */
+function handlePaste(event) {
+    if (!state.visionSupported) return; // 当前模型不支持 Vision，忽略图片
+    const items = event.clipboardData && event.clipboardData.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+            event.preventDefault();
+            const file = item.getAsFile();
+            if (!file) continue;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const dataUrl = e.target.result; // data:image/png;base64,xxxx
+                const mimeType = file.type || 'image/png';
+                const base64 = dataUrl.split(',')[1];
+                addImagePreview(base64, mimeType, dataUrl);
+            };
+            reader.readAsDataURL(file);
+        }
+    }
+}
+
+/**
+ * 添加图片缩略图到预览区
+ */
+function addImagePreview(base64, mimeType, dataUrl) {
+    const area = document.getElementById('image-preview-area');
+    const idx = pendingImages.length;
+    pendingImages.push({ base64, mimeType, dataUrl });
+
+    const item = document.createElement('div');
+    item.className = 'image-preview-item';
+    item.dataset.idx = idx;
+
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = '图片预览';
+    item.appendChild(img);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'image-preview-remove';
+    removeBtn.title = '移除图片';
+    removeBtn.textContent = '✕';
+    removeBtn.onclick = function() {
+        const i = parseInt(item.dataset.idx, 10);
+        pendingImages.splice(i, 1);
+        // 重新编号
+        area.querySelectorAll('.image-preview-item').forEach((el, j) => {
+            el.dataset.idx = j;
+        });
+        item.remove();
+        if (area.querySelectorAll('.image-preview-item').length === 0) {
+            area.style.display = 'none';
+        }
+    };
+    item.appendChild(removeBtn);
+    area.appendChild(item);
+    area.style.display = 'flex';
+}
+
+/**
+ * 清空图片预览区
+ */
+function clearImagePreviews() {
+    pendingImages.length = 0;
+    const area = document.getElementById('image-preview-area');
+    area.innerHTML = '';
+    area.style.display = 'none';
 }
 
 // ==================== @文件引用 ====================
@@ -669,11 +841,14 @@ window.onFileSearchResult = function(results) {
     renderFilePicker(filePickerResults);
 };
 
-/** 渲染文件列表 */
+/**
+ * T24：渲染文件/类/方法搜索列表
+ * 支持 PSI 搜索结果（含 kind、display 字段）和旧版文件搜索结果
+ */
 function renderFilePicker(results) {
     const listEl = document.getElementById('file-picker-list');
     if (!results || results.length === 0) {
-        listEl.innerHTML = '<div class="file-picker-empty">未找到匹配文件</div>';
+        listEl.innerHTML = '<div class="file-picker-empty">未找到匹配文件或符号</div>';
         return;
     }
     const langIcons = {
@@ -681,14 +856,22 @@ function renderFilePicker(results) {
         go:'🐹', rust:'🦀', cpp:'⚙️', c:'©️', xml:'📄', yaml:'📋',
         json:'📦', markdown:'📝', sql:'🗄️', bash:'💻', html:'🌐', css:'🎨'
     };
+    const kindIcons = { CLASS:'🔷', METHOD:'🔹', FILE:'📄', FIELD:'🔸', CODE:'📌' };
     listEl.innerHTML = results.map((f, i) => {
-        const icon = langIcons[f.language] || '📄';
+        // 兼容 PSI 结果（有 kind/display）和旧版文件结果（有 language）
+        const icon = f.kind
+            ? (kindIcons[f.kind] || '📄')
+            : (langIcons[f.language] || '📄');
+        const displayName = f.display
+            ? f.display.replace(/^[^\s]+\s+/, '')  // 去掉 emoji 前缀，保留名称
+            : (f.name || f.path.split('/').pop());
+        const displayPath = f.path;
         const active = i === filePickerSelectedIndex ? 'active' : '';
         return `<div class="file-picker-item ${active}" data-index="${i}" onclick="selectFileFromPicker(${i})">
             <span class="file-picker-icon">${icon}</span>
             <div class="file-picker-info">
-                <span class="file-picker-name">${escapeHtml(f.name)}</span>
-                <span class="file-picker-path">${escapeHtml(f.path)}</span>
+                <span class="file-picker-name">${escapeHtml(displayName)}</span>
+                <span class="file-picker-path">${escapeHtml(displayPath)}</span>
             </div>
         </div>`;
     }).join('');
@@ -820,7 +1003,9 @@ function closeSessions() {
     document.getElementById('sessions-search-input').value = '';
 }
 
-/** 渲染会话列表 */
+/**
+ * T19：渲染会话列表 — 按时间分组 + 时间戳 + 模式图标 + 导出按钮
+ */
 function renderSessionList(sessions) {
     const listEl = document.getElementById('sessions-list');
     if (!sessions || sessions.length === 0) {
@@ -828,33 +1013,45 @@ function renderSessionList(sessions) {
         return;
     }
 
-    // 按时间分组
+    // 按时间分组（今天 / 昨天 / 本周 / 更早）
     const now = Date.now();
     const groups = { today: [], yesterday: [], week: [], older: [] };
     sessions.forEach(s => {
-        const diff = now - s.updatedAt;
-        if (diff < 86400000) groups.today.push(s);
+        const diff = now - (s.updatedAt || s.createdAt || 0);
+        if (diff < 86400000)       groups.today.push(s);
         else if (diff < 172800000) groups.yesterday.push(s);
         else if (diff < 604800000) groups.week.push(s);
-        else groups.older.push(s);
+        else                       groups.older.push(s);
     });
 
-    const labels = {today:'今天', yesterday:'昨天', week:'本周', older:'更早'};
+    const labels = { today: '今天', yesterday: '昨天', week: '本周', older: '更早' };
     let html = '';
     Object.entries(groups).forEach(([key, items]) => {
         if (items.length === 0) return;
         html += `<div class="sessions-group-label">${labels[key]}</div>`;
         items.forEach(s => {
             const isActive = s.id === (state.currentSessionId || currentSessionIdFromServer);
-            const modelTag = s.model ? `<span class="session-model">${s.model}</span>` : '';
+            // 模式图标：根据 provider/model 名称判断是否 Agent（后续可从 server 扩展字段）
+            const modeIcon = '💬';
+            // 时间戳：今天只显示时分，否则显示月日
+            const ts = s.updatedAt || s.createdAt || 0;
+            const tsDate = new Date(ts);
+            const isToday = (now - ts) < 86400000;
+            const timeLabel = ts ? (isToday
+                ? tsDate.getHours().toString().padStart(2,'0') + ':' + tsDate.getMinutes().toString().padStart(2,'0')
+                : (tsDate.getMonth()+1) + '/' + tsDate.getDate()) : '';
+            const modelTag = s.model ? `<span class="session-model">${escapeHtml(s.model)}</span>` : '';
             html += `
                 <div class="session-item ${isActive ? 'active' : ''}" data-id="${s.id}"
                      onclick="loadSession('${s.id}')">
+                    <div class="session-icon">${modeIcon}</div>
                     <div class="session-info">
                         <span class="session-title">${escapeHtml(s.title)}</span>
-                        ${modelTag}
+                        <span class="session-meta">${timeLabel}${s.model ? ' · ' + escapeHtml(s.model) : ''}</span>
                     </div>
                     <div class="session-actions">
+                        <button class="session-action-btn" title="导出为 Markdown"
+                                onclick="event.stopPropagation(); exportSession('${s.id}', this)">⬇</button>
                         <button class="session-action-btn" title="重命名"
                                 onclick="event.stopPropagation(); renameSessionPrompt('${s.id}', this)">✎</button>
                         <button class="session-action-btn danger" title="删除"
@@ -866,14 +1063,17 @@ function renderSessionList(sessions) {
     listEl.innerHTML = html;
 }
 
-/** 搜索过滤会话 */
+/**
+ * T19：搜索过滤会话（标题模糊匹配）
+ */
 function filterSessions(keyword) {
     if (!keyword.trim()) {
         renderSessionList(allSessions);
         return;
     }
+    const kw = keyword.toLowerCase();
     const filtered = allSessions.filter(s =>
-        s.title.toLowerCase().includes(keyword.toLowerCase())
+        s.title.toLowerCase().includes(kw)
     );
     renderSessionList(filtered);
 }
@@ -900,6 +1100,168 @@ function deleteSessionConfirm(sessionId, btnEl) {
     if (confirm(`确认删除会话「${title}」？`)) {
         bridge.send({ type: 'deleteSession', sessionId });
     }
+}
+
+/**
+ * T21：导出会话为 Markdown 文件
+ * 通过 JS Bridge 通知 Kotlin 侧加载会话内容并写入文件
+ */
+function exportSession(sessionId, btnEl) {
+    btnEl.textContent = '⏳';
+    btnEl.disabled = true;
+    bridge.send({ type: 'exportSession', sessionId });
+    setTimeout(() => {
+        btnEl.textContent = '⬇';
+        btnEl.disabled = false;
+    }, 1500);
+}
+
+/**
+ * T21：Kotlin 通知导出完成，可选展示路径
+ */
+window.onExportDone = function(data) {
+    if (data && data.filePath) {
+        console.log('[Chat] 会话已导出：' + data.filePath);
+    }
+};
+
+/**
+ * T21：导出会话为 Markdown 文件
+ * 通过 JS Bridge 通知 Kotlin 侧加载会话内容并写入文件
+ */
+function exportSession(sessionId, btnEl) {
+    btnEl.textContent = '⏳';
+    btnEl.disabled = true;
+    bridge.send({ type: 'exportSession', sessionId });
+    // 1.5s 后恢复按钮状态
+    setTimeout(() => {
+        btnEl.textContent = '⬇';
+        btnEl.disabled = false;
+    }, 1500);
+}
+
+/**
+ * T21：Kotlin 通知导出完成
+ */
+window.onExportDone = function(data) {
+    if (data && data.filePath) {
+        console.log('[Chat] 会话已导出到：' + data.filePath);
+    }
+};
+
+// ==================== P2-9：Checkpoint 时间线 ====================
+
+/** 当前 checkpoint 列表（内存缓存，用于 UI 渲染） */
+let checkpointList = [];
+
+/**
+ * P2-9：收到 Checkpoint 列表（由 Kotlin onCheckpointCreated 或 handleGetCheckpoints 触发）
+ * 渲染底部时间线
+ */
+window.onCheckpointList = function(checkpoints) {
+    checkpointList = checkpoints || [];
+    renderCheckpointTimeline();
+};
+
+/**
+ * P2-9：回滚完成回调
+ * @param {object} data - { checkpointId, success }
+ */
+window.onRollbackDone = function(data) {
+    const bar = document.getElementById('checkpoint-bar');
+    if (!data.success) {
+        // 回滚失败：在时间线区域显示 1.5 秒报错提示
+        if (bar) {
+            const errEl = document.createElement('span');
+            errEl.className = 'cp-error-msg';
+            errEl.textContent = '⚠️ 回滚失败';
+            bar.appendChild(errEl);
+            setTimeout(() => errEl.remove(), 2000);
+        }
+        return;
+    }
+    // 回滚成功：更新时间线按钮状态
+    const btn = document.querySelector(`.cp-btn[data-id="${data.checkpointId}"]`);
+    if (btn) {
+        btn.textContent = '✓ 已回滚';
+        btn.disabled = true;
+        btn.classList.add('rolled-back');
+    }
+    // 聊天区底部插入系统通知
+    const sysEl = document.createElement('div');
+    sysEl.className = 'message system-message';
+    sysEl.innerHTML = `<div class="rollback-notice">
+        <span class="rollback-icon">↩</span>
+        <span>已成功回滚到 Checkpoint（<code>${data.checkpointId}</code>），文件已恢复到任务执行前的状态。</span>
+    </div>`;
+    const msgEl = document.getElementById('messages');
+    if (msgEl) { msgEl.appendChild(sysEl); scrollToBottom(); }
+};
+
+/**
+ * 渲染 Checkpoint 底部时间线
+ * 时间线位于聊天输入区上方，紧贴底部（position: sticky bottom）
+ */
+function renderCheckpointTimeline() {
+    let bar = document.getElementById('checkpoint-bar');
+    if (!bar) {
+        // 首次创建：插入到 chat-input 之前
+        bar = document.createElement('div');
+        bar.id = 'checkpoint-bar';
+        bar.className = 'checkpoint-bar';
+        const inputArea = document.querySelector('.chat-input') || document.querySelector('.input-wrapper');
+        if (inputArea && inputArea.parentNode) {
+            inputArea.parentNode.insertBefore(bar, inputArea);
+        } else {
+            // 降级：追加到 body
+            document.body.appendChild(bar);
+        }
+    }
+
+    if (!checkpointList || checkpointList.length === 0) {
+        bar.style.display = 'none';
+        return;
+    }
+
+    bar.style.display = 'flex';
+    // 展示最多 5 个（最新在左）
+    const shown = checkpointList.slice(0, 5);
+    bar.innerHTML = `
+        <span class="cp-label">⏱ 检查点</span>
+        <div class="cp-items">
+            ${shown.map(cp => `
+                <div class="cp-item" title="${escapeHtml(cp.taskDescription)}">
+                    <span class="cp-time">${escapeHtml(cp.timeLabel)}</span>
+                    <span class="cp-files">${cp.fileCount} 文件</span>
+                    <button class="cp-btn" data-id="${cp.id}"
+                            onclick="rollbackCheckpoint('${cp.id}', this)">
+                        ↩ 回滚
+                    </button>
+                </div>
+            `).join('')}
+        </div>
+        <button class="cp-close-btn" onclick="hideCheckpointBar()" title="关闭时间线">✕</button>
+    `;
+}
+
+/**
+ * 回滚到指定 Checkpoint（点击"↩ 回滚"按钮时触发）
+ */
+function rollbackCheckpoint(checkpointId, btnEl) {
+    if (!confirm('确认将文件回滚到此 Checkpoint？此操作会覆盖当前文件内容。')) return;
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = '回滚中…';
+    }
+    bridge.send({ type: 'rollbackCheckpoint', checkpointId });
+}
+
+/**
+ * 隐藏 Checkpoint 时间线（用户主动关闭）
+ */
+function hideCheckpointBar() {
+    const bar = document.getElementById('checkpoint-bar');
+    if (bar) bar.style.display = 'none';
 }
 
 /** HTML 转义 */
@@ -1000,6 +1362,25 @@ function updateModelDisplay(provider, model) {
     document.getElementById('current-model-text').textContent = displayName;
 }
 
+/**
+ * P2-10：更新 Vision 支持状态
+ * supported=true 时：textarea 提示文字提示图片可粘贴
+ * supported=false 时：清空已有图片预览，不再响应粘贴图片
+ */
+function updateVisionSupport(supported) {
+    state.visionSupported = !!supported;
+    const input = document.getElementById('user-input');
+    if (input) {
+        input.placeholder = supported
+            ? '输入消息... (@引用文件，Ctrl+V 粘贴图片，Shift+Enter 换行，Enter 发送)'
+            : '输入消息... (@引用文件，Shift+Enter 换行，Enter 发送)';
+    }
+    // 当前模型不支持 Vision 时，清除已粘贴的图片预览
+    if (!supported) {
+        clearImagePreviews();
+    }
+}
+
 /** 渲染模型下拉列表 */
 function renderModelDropdown(providers) {
     const list = document.getElementById('model-dropdown-list');
@@ -1073,13 +1454,24 @@ function closeModelDropdown() {
 
 // ==================== 消息渲染 ====================
 
-function addUserMessage(content) {
+function addUserMessage(content, images) {
     const userName = state.userName || 'You';
     const msgEl = document.createElement('div');
     msgEl.className = 'message user-message';
+
+    // P2-10：构建图片缩略图 HTML
+    let imagesHtml = '';
+    if (images && images.length > 0) {
+        imagesHtml = '<div class="user-msg-images">' +
+            images.map(img =>
+                `<img class="user-msg-image-thumb" src="${img.dataUrl}" alt="图片" title="图片">`
+            ).join('') + '</div>';
+    }
+
     msgEl.innerHTML = `
         <div class="user-msg-body">
             <div class="user-name-label">${escapeHtml(userName)}</div>
+            ${imagesHtml}
             <div class="message-bubble">${escapeHtml(content)}</div>
         </div>
         <div class="user-avatar">👤</div>`;
@@ -1313,14 +1705,18 @@ function showThinking() {
     const msgEl = document.createElement('div');
     msgEl.className = 'message ai-message';
     msgEl.id = 'thinking-message';
+    // T10：thinking-bubble 包裹 thinking-text，appendThinkingToken 通过选择器追加实时 token
     msgEl.innerHTML = `
         <div class="ai-avatar">🔥</div>
         <div class="message-content">
-            <div class="thinking-indicator">
-                <div class="thinking-dots">
-                    <span></span><span></span><span></span>
+            <div class="thinking-bubble">
+                <div class="thinking-indicator">
+                    <div class="thinking-dots">
+                        <span></span><span></span><span></span>
+                    </div>
+                    <span>正在思考...</span>
                 </div>
-                <span>正在思考...</span>
+                <div class="thinking-text"></div>
             </div>
         </div>`;
     document.getElementById('messages').appendChild(msgEl);

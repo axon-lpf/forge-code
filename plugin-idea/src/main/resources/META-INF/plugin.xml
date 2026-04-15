@@ -122,6 +122,27 @@
                     text="Review Code"
                     description="让 AI 审查选中的代码，找出潜在问题"/>
         </group>
+        <!-- ===== Git 深度集成 Actions（T18）===== -->
+        <!-- Generate Commit Message：加入 VCS 操作组 + 编辑器右键菜单 -->
+        <group id="CodeForge.GitGroup" text="CodeForge Git" description="CodeForge Git AI 工具" popup="true"
+               icon="/icons/forge_16.svg">
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+            <add-to-group group-id="VcsGroups" anchor="last"/>
+
+            <action id="CodeForge.GenerateCommitMessage"
+                    class="com.codeforge.plugin.idea.actions.GenerateCommitMessageAction"
+                    text="Generate Commit Message"
+                    description="使用 AI 为 staged 变更生成 Conventional Commit 格式的提交信息">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt M"/>
+            </action>
+
+            <action id="CodeForge.GeneratePRDescription"
+                    class="com.codeforge.plugin.idea.actions.GeneratePRDescriptionAction"
+                    text="Generate PR Description"
+                    description="使用 AI 为当前分支生成 PR 描述，并复制到剪贴板">
+                <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt P"/>
+            </action>
+        </group>
     </actions>
 
 </idea-plugin>

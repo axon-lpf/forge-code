@@ -101,6 +101,11 @@
             <span>📁 代码仓库</span>
             <span id="project-name">未知项目</span>
         </div>
+        <!-- T15：规则文件激活标识（有规则文件时显示） -->
+        <div class="rules-badge" id="rules-badge" style="display:none">
+            <span class="rules-badge-icon">📋</span>
+            <span id="rules-badge-label"></span>
+        </div>
     </div>
 
     <!-- 对话消息列表 -->
@@ -168,13 +173,16 @@
 <div class="input-area">
     <!-- @引用标签栏（有引用时显示） -->
     <div class="ctx-tags" id="ctx-tags" style="display:none"></div>
+    <!-- P2-10：图片预览区（粘贴截图时显示） -->
+    <div class="image-preview-area" id="image-preview-area" style="display:none"></div>
     <div class="input-box">
         <textarea
             id="user-input"
             placeholder="输入消息... (@引用文件，Shift+Enter 换行，Enter 发送)"
             rows="3"
             onkeydown="handleKeyDown(event)"
-            oninput="onInputChange(event)">
+            oninput="onInputChange(event)"
+            onpaste="handlePaste(event)">
         </textarea>
         <button class="send-btn" id="send-btn" onclick="sendMessage()">▶</button>
         <button class="stop-btn" id="stop-btn" onclick="cancelMessage()" style="display:none">■</button>

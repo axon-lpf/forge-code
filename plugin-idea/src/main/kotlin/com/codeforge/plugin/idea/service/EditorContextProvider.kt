@@ -8,6 +8,9 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiElement
+import com.intellij.psi.util.PsiTreeUtil
 
 /**
  * 编辑器上下文提供者 — 自动采集 IDE 当前状态
@@ -39,7 +42,10 @@ object EditorContextProvider {
         val selectedCode: String?,          // 选中的代码
         val surroundingCode: String?,       // 光标附近代码
         val surroundingStartLine: Int?,     // surrounding 起始行（1-based）
-        val openFiles: List<String>         // 打开的文件列表
+        val openFiles: List<String>,        // 打开的文件列表
+        // ── PSI 新增字段 ──────────────────────────────────────
+        val cursorClassName: String?   = null,  // 光标所在类名（PSI 解析）
+        val cursorMethodName: String?  = null   // 光标所在方法/函数名（PSI 解析）
     )
 
     // ==================== 公开 API ====================
@@ -72,14 +78,17 @@ object EditorContextProvider {
         // 活跃文件
         sb.appendLine("▸ 当前文件: `${ctx.activeFilePath}`${ctx.language?.let { " ($it)" } ?: ""}")
 
-        // 光标位置
-        if (ctx.cursorLine != null) {
+        // PSI：光标所在类/方法
+        val psiLocation = listOfNotNull(ctx.cursorClassName, ctx.cursorMethodName).joinToString(" > ")
+        if (psiLocation.isNotBlank()) {
+            sb.appendLine("▸ 光标位置: $psiLocation（第 ${ctx.cursorLine ?: "?"} 行）")
+        } else if (ctx.cursorLine != null) {
             sb.appendLine("▸ 光标位置: 第 ${ctx.cursorLine} 行, 第 ${ctx.cursorColumn ?: 1} 列")
         }
 
-        // 打开的文件列表
+        // 打开的文件列表（最多显示 5 个）
         if (ctx.openFiles.isNotEmpty()) {
-            sb.appendLine("▸ 打开的文件: ${ctx.openFiles.joinToString(", ") { "`$it`" }}")
+            sb.appendLine("▸ 打开的文件: ${ctx.openFiles.take(5).joinToString(", ") { "`$it`" }}")
         }
 
         // 选中的代码
@@ -164,6 +173,9 @@ object EditorContextProvider {
                 .take(MAX_CONTEXT_CHARS)
         } else null
 
+        // 7. PSI 解析：光标所在类名 / 方法名
+        val (cursorClassName, cursorMethodName) = resolvePsiContext(project, editor)
+
         return EditorContext(
             activeFilePath = relativePath,
             activeFileName = virtualFile?.name,
@@ -173,8 +185,97 @@ object EditorContextProvider {
             selectedCode = selectedCode,
             surroundingCode = surroundingCode,
             surroundingStartLine = startLine + 1,  // 1-based
-            openFiles = openFiles
+            openFiles = openFiles,
+            cursorClassName  = cursorClassName,
+            cursorMethodName = cursorMethodName
         )
+    }
+
+    /**
+     * 通过 PSI 解析光标所在的类名和方法/函数名
+     *
+     * 兼容策略：
+     *  - 优先使用反射调用 Java/Kotlin PSI API（PsiClass、PsiMethod、KtClass、KtFunction）
+     *  - PSI 不可用（非 Java/Kotlin 文件）时优雅降级，返回 null
+     */
+    private fun resolvePsiContext(project: Project, editor: Editor): Pair<String?, String?> {
+        return try {
+            val document = editor.document
+            val psiFile = PsiDocumentManager.getInstance(project).getPsiFile(document)
+                ?: return null to null
+
+            val offset = editor.caretModel.offset
+            val element: PsiElement = psiFile.findElementAt(offset) ?: return null to null
+
+            // 解析方法名（通用：通过反射检测 PSI 元素名称，兼容 Java/Kotlin/Go/Python 等）
+            val methodName = findContainingMethodName(element)
+            val className  = findContainingClassName(element)
+
+            className to methodName
+        } catch (e: Exception) {
+            log.debug("PSI 解析失败（非致命）: ${e.message}")
+            null to null
+        }
+    }
+
+    /**
+     * 向上查找光标所在的方法/函数名
+     * 通过反射检测常见 PSI 接口，避免硬依赖 Java/Kotlin 插件
+     */
+    private fun findContainingMethodName(element: PsiElement): String? {
+        var current: PsiElement? = element.parent
+        while (current != null) {
+            val name = tryGetNamedElementName(current, setOf(
+                "com.intellij.psi.PsiMethod",
+                "org.jetbrains.kotlin.psi.KtNamedFunction",
+                "com.intellij.psi.PsiFunction",
+                "com.goide.psi.GoFunctionDeclaration",
+                "com.jetbrains.python.psi.PyFunction"
+            ))
+            if (name != null) return name
+            current = current.parent
+        }
+        return null
+    }
+
+    /**
+     * 向上查找光标所在的类/对象名
+     */
+    private fun findContainingClassName(element: PsiElement): String? {
+        var current: PsiElement? = element.parent
+        while (current != null) {
+            val name = tryGetNamedElementName(current, setOf(
+                "com.intellij.psi.PsiClass",
+                "org.jetbrains.kotlin.psi.KtClass",
+                "org.jetbrains.kotlin.psi.KtObjectDeclaration",
+                "com.goide.psi.GoTypeSpec",
+                "com.jetbrains.python.psi.PyClass"
+            ))
+            if (name != null) return name
+            current = current.parent
+        }
+        return null
+    }
+
+    /**
+     * 反射尝试获取 PSI 元素的 name（调用 getName() 方法）
+     * 如果元素是指定类型之一且有名称，则返回；否则返回 null
+     */
+    private fun tryGetNamedElementName(element: PsiElement, targetClassNames: Set<String>): String? {
+        for (className in targetClassNames) {
+            try {
+                val clazz = Class.forName(className)
+                if (clazz.isInstance(element)) {
+                    val nameMethod = clazz.getMethod("getName")
+                    return nameMethod.invoke(element) as? String
+                }
+            } catch (_: ClassNotFoundException) {
+                // 该语言插件未安装，跳过
+            } catch (_: Exception) {
+                // 其他反射异常，跳过
+            }
+        }
+        return null
     }
 
     private fun detectLanguage(fileName: String): String? {

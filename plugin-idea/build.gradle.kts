@@ -70,6 +70,14 @@ tasks {
         archiveFileName.set("codeforge-${providers.gradleProperty("pluginVersion").get()}.zip")
     }
 
+    // 禁用 buildSearchableOptions：
+    // 该 task 在 IDEA 2024.1 + JDK17 环境下会因 Grazie 插件中
+    // Xerces 库版本兼容性问题（ClassFormatError: Unknown constant tag 47）崩溃。
+    // searchableOptions 仅影响 Settings 搜索关键词索引，不影响插件核心功能。
+    buildSearchableOptions {
+        enabled = false
+    }
+
     // 测试配置
     test {
         useJUnitPlatform()
