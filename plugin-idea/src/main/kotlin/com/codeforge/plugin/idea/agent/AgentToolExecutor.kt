@@ -154,6 +154,13 @@ object AgentToolExecutor {
     // ==================== 各工具实现 ====================
 
     private fun execute(project: Project, tool: String, params: Map<*, *>): ToolResult {
+        // A5：检查工具配置，DISABLED 则直接拒绝执行
+        val toolMode = com.codeforge.plugin.idea.settings.CodeForgeSettings.getInstance().getToolMode(tool)
+        if (toolMode == com.codeforge.plugin.idea.settings.CodeForgeSettings.ToolMode.DISABLED) {
+            log.info("AgentToolExecutor: 工具 '$tool' 已被禁用（工具配置：关闭）")
+            return ToolResult(tool, false, "", "工具 '$tool' 已关闭，请在工具配置面板（/tools）中开启")
+        }
+
         return when (tool) {
             "read_file"    -> readFile(project, params["path"] as? String ?: "")
             "write_file"   -> writeFile(project, params["path"] as? String ?: "",

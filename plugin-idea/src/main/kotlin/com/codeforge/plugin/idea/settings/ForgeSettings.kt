@@ -56,7 +56,15 @@ class CodeForgeSettings : PersistentStateComponent<CodeForgeSettings.State> {
         /** 是否启用行内代码补全（Ghost Text） */
         var inlineCompletionEnabled: Boolean = true,
         /** 行内补全触发延迟（毫秒） */
-        var inlineCompletionDelayMs: Int = 500
+        var inlineCompletionDelayMs: Int = 500,
+
+        // ===== Agent 设置 =====
+        /** run_terminal 失败后自动修复的最大重试次数（0 = 禁用自动修复） */
+        var autoFixMaxRetries: Int = 3,
+
+        // ===== A5：工具配置 =====
+        /** 各 Agent 工具的启用模式（JSON 序列化：Map<toolName, ToolMode.name>） */
+        var toolConfigJson: String = "{}"
     )
 
     private var state = State()
@@ -104,6 +112,50 @@ class CodeForgeSettings : PersistentStateComponent<CodeForgeSettings.State> {
     var inlineCompletionDelayMs: Int
         get() = state.inlineCompletionDelayMs
         set(value) { state.inlineCompletionDelayMs = value }
+
+    var autoFixMaxRetries: Int
+        get() = state.autoFixMaxRetries
+        set(value) { state.autoFixMaxRetries = value }
+
+    // ==================== A5：工具配置 ====================
+
+    /** Agent 工具的启用模式 */
+    enum class ToolMode { AUTO, ENABLED, DISABLED }
+
+    /** 默认工具配置（未显式配置时的默认值） */
+    private val DEFAULT_TOOL_CONFIG = mapOf(
+        "read_file"    to ToolMode.AUTO,
+        "write_file"   to ToolMode.AUTO,
+        "list_files"   to ToolMode.ENABLED,
+        "search_code"  to ToolMode.ENABLED,
+        "run_terminal" to ToolMode.AUTO
+    )
+
+    /** 读取指定工具的当前模式 */
+    fun getToolMode(tool: String): ToolMode {
+        return try {
+            val type = object : TypeToken<Map<String, String>>() {}.type
+            val map: Map<String, String> = gson.fromJson(state.toolConfigJson, type) ?: emptyMap()
+            val modeStr = map[tool] ?: return DEFAULT_TOOL_CONFIG[tool] ?: ToolMode.AUTO
+            ToolMode.valueOf(modeStr)
+        } catch (_: Exception) {
+            DEFAULT_TOOL_CONFIG[tool] ?: ToolMode.AUTO
+        }
+    }
+
+    /** 设置指定工具的模式并持久化 */
+    fun setToolMode(tool: String, mode: ToolMode) {
+        val type = object : TypeToken<MutableMap<String, String>>() {}.type
+        val map: MutableMap<String, String> = try {
+            gson.fromJson(state.toolConfigJson, type) ?: mutableMapOf()
+        } catch (_: Exception) { mutableMapOf() }
+        map[tool] = mode.name
+        state.toolConfigJson = gson.toJson(map)
+    }
+
+    /** 获取所有工具的当前配置（未配置的工具返回默认值） */
+    fun getToolModeMap(): Map<String, ToolMode> =
+        DEFAULT_TOOL_CONFIG.keys.associateWith { getToolMode(it) }
 
     // ==================== Provider 配置读写 ====================
 

@@ -121,6 +121,14 @@
                     class="com.codeforge.plugin.idea.actions.ReviewCodeAction"
                     text="Review Code"
                     description="让 AI 审查选中的代码，找出潜在问题"/>
+
+            <!-- A7：行内 AI 编辑（选中代码后 Alt+A 触发） -->
+            <action id="CodeForge.InlineEdit"
+                    class="com.codeforge.plugin.idea.actions.InlineEditAction"
+                    text="Inline Edit"
+                    description="选中代码后弹出 AI 编辑指令框，修改结果以 InlineDiff 展示">
+                <keyboard-shortcut keymap="$default" first-keystroke="alt A"/>
+            </action>
         </group>
         <!-- ===== Git 深度集成 Actions（T18）===== -->
         <!-- Generate Commit Message：加入 VCS 操作组 + 编辑器右键菜单 -->

@@ -1155,6 +1155,88 @@ html, body {
 }
 .plan-cancel-btn:hover { color: var(--red); border-color: var(--red); }
 
+/* ==================== A6：Agent Plan Mode 计划确认卡片 ==================== */
+.agent-plan-card {
+    background: var(--bg-secondary) !important;
+    border: 1px solid rgba(99,102,241,0.35) !important;
+    border-radius: 10px !important;
+    padding: 14px 16px !important;
+    min-width: 260px;
+}
+.agent-plan-header {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+    letter-spacing: 0.3px;
+}
+.agent-plan-content {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin-bottom: 12px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.agent-plan-content p  { margin: 4px 0; }
+.agent-plan-content h3 { font-size: 12px; font-weight: 600; color: var(--text-primary); margin: 8px 0 2px; }
+.agent-plan-content li { margin: 2px 0; }
+.agent-plan-textarea {
+    width: 100%;
+    min-height: 140px;
+    max-height: 320px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    resize: vertical;
+    box-sizing: border-box;
+    font-family: inherit;
+    margin-bottom: 10px;
+}
+.agent-plan-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.agent-plan-confirm-btn {
+    flex: 1;
+    padding: 7px 0;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.agent-plan-confirm-btn:hover    { opacity: 0.85; }
+.agent-plan-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.agent-plan-edit-btn {
+    padding: 7px 14px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+}
+.agent-plan-edit-btn:hover    { color: var(--accent); border-color: var(--accent); }
+.agent-plan-edit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.agent-plan-cancel-btn {
+    padding: 7px 14px;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+}
+.agent-plan-cancel-btn:hover    { color: var(--red, #ef4444); border-color: var(--red, #ef4444); }
+.agent-plan-cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ==================== Review Tab ==================== */
 
 /* 顶部操作栏 */
@@ -1403,6 +1485,40 @@ html, body {
     padding: 4px 10px;
     color: var(--text-secondary);
     font-style: italic;
+}
+
+/* ==================== A4：Slash Commands 面板 ==================== */
+.slash-panel {
+    position: fixed;
+    bottom: 135px;
+    left: 8px;
+    right: 8px;
+    background: var(--bg-elevated, #2a2a3a);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+    z-index: 200;
+    overflow: hidden;
+}
+.slash-panel-list { padding: 4px 0; max-height: 280px; overflow-y: auto; }
+.slash-panel-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 14px;
+    cursor: pointer;
+    gap: 10px;
+    transition: background 0.12s;
+}
+.slash-panel-item:hover,
+.slash-panel-item.active { background: var(--bg-hover, rgba(99,102,241,0.12)); }
+.slash-panel-icon { font-size: 15px; flex-shrink: 0; width: 22px; text-align: center; }
+.slash-panel-info { flex: 1; min-width: 0; }
+.slash-panel-cmd  { font-size: 12px; font-weight: 600; color: var(--accent); font-family: monospace; }
+.slash-panel-desc { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.slash-panel-hint {
+    font-size: 11px; color: var(--text-muted);
+    padding: 6px 14px 8px; text-align: center;
+    border-top: 1px solid var(--border);
 }
 
 /* ==================== @文件引用弹窗 ==================== */

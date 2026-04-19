@@ -2,6 +2,7 @@ package com.codeforge.plugin.idea.agent
 
 import com.codeforge.plugin.idea.diff.MultiFileDiffManager
 import com.codeforge.plugin.idea.service.LlmService
+import com.codeforge.plugin.idea.settings.CodeForgeSettings
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import java.util.concurrent.atomic.AtomicBoolean
@@ -55,6 +56,34 @@ object AgentService {
 
     enum class StepStatus { PENDING, RUNNING, DONE, ERROR }
 
+    // ==================== A6：Plan Mode ====================
+
+    /** Plan Mode 用户决策 */
+    sealed class PlanDecision {
+        object Confirm : PlanDecision()
+        object Cancel : PlanDecision()
+        data class Edit(val modifiedPlan: String) : PlanDecision()
+    }
+
+    /** Plan Mode 等待队列（runAgent 阻塞等待用户决策） */
+    @Volatile
+    private var planDecisionQueue: java.util.concurrent.LinkedBlockingQueue<PlanDecision>? = null
+
+    /**
+     * ForgeChatPanel 收到 JS confirmPlan / cancelPlan / editPlan 消息后调用此方法，
+     * 唤醒 runAgent 中阻塞等待的线程。
+     */
+    fun signalPlanDecision(decision: PlanDecision) {
+        planDecisionQueue?.offer(decision)
+            ?: log.warn("AgentService: signalPlanDecision 调用时没有等待中的 Plan")
+    }
+
+    /** 从 LLM 响应中提取 <plan>...</plan> 内容，无则返回 null */
+    private fun extractPlan(response: String): String? {
+        val regex = Regex("<plan>([\\s\\S]*?)</plan>", RegexOption.IGNORE_CASE)
+        return regex.find(response)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+    }
+
     // ==================== Agent 模式 ====================
 
     /**
@@ -79,7 +108,9 @@ object AgentService {
         onToken: (String) -> Unit,
         onDone: () -> Unit,
         onError: (Exception) -> Unit,
-        onCheckpointCreated: (List<Map<String, Any>>) -> Unit = {}  // P2-9：Checkpoint 列表推送回调
+        onCheckpointCreated: (List<Map<String, Any>>) -> Unit = {},  // P2-9：Checkpoint 列表推送回调
+        isPlanMode: Boolean = false,             // A6：Plan Mode — 先出计划再执行
+        onPlanReady: (String) -> Unit = {}       // A6：Plan Mode — 计划就绪，等待用户确认
     ) {
         val llmService = LlmService.getInstance()
 
@@ -129,6 +160,25 @@ object AgentService {
                         }
                         append("\n\n== 可用工具 ==\n")
                         append(AgentToolExecutor.TOOL_DEFINITIONS)
+                        val maxAutoFix = CodeForgeSettings.getInstance().autoFixMaxRetries
+                        // A6：Plan Mode 指令（放在工具定义之后，优先级高）
+                        if (isPlanMode) {
+                            append("""
+
+== Plan Mode（规划模式）==
+在调用任何工具之前，必须先以如下格式输出完整执行计划，等待用户确认后再开始执行：
+
+<plan>
+步骤 1：[步骤标题]
+[详细描述]
+
+步骤 2：[步骤标题]
+[详细描述]
+...
+</plan>
+
+用户确认后，按计划逐步调用工具执行。若用户修改了计划，按修改后的版本执行。""")
+                        }
                         append("""
 
 重要规则：
@@ -136,7 +186,8 @@ object AgentService {
 - 回答任何关于项目的问题时，必须先用 read_file 或 list_files 工具读取实际文件内容，不要凭空猜测
 - 使用工具时严格按照格式，每次只调用一个工具，等待结果后再继续
 - 当任务完成时，直接给出最终回复，不要再调用工具
-- 不要重复调用同一个工具和路径，避免无限循环""")
+- 不要重复调用同一个工具和路径，避免无限循环
+- 当 run_terminal 执行失败时（exit code ≠ 0），分析错误输出，定位并修复问题，然后重新执行命令；最多尝试 $maxAutoFix 次，超过后直接告知用户失败原因""")
                     })
 
                 // 当前对话消息列表
@@ -148,6 +199,13 @@ object AgentService {
                 // 收集所有工具调用，最后汇总显示
                 val allToolCalls = mutableListOf<Pair<String, String>>() // tool → result summary
                 var continueLoop = true
+
+                // A8：错误自动修复循环 — 追踪 run_terminal 连续失败次数
+                var terminalFailCount = 0
+                val maxAutoFix = CodeForgeSettings.getInstance().autoFixMaxRetries
+
+                // A6：Plan Mode — 计划只检测一次，避免重复弹出
+                var planShown = false
 
                 while (continueLoop && !cancelFlag.get()) {
                     val responseBuffer = StringBuilder()
@@ -185,6 +243,45 @@ object AgentService {
                     }
                     messages.add(mapOf("role" to "assistant", "content" to response))
 
+                    // ── A6：Plan Mode — 检测 <plan> 标签，暂停等待用户确认 ───────
+                    if (isPlanMode && !planShown) {
+                        val planContent = extractPlan(response)
+                        if (planContent != null) {
+                            planShown = true
+                            log.info("AgentService: Plan Mode — 检测到计划，等待用户确认（最多10分钟）")
+
+                            val queue = java.util.concurrent.LinkedBlockingQueue<PlanDecision>(1)
+                            planDecisionQueue = queue
+                            onPlanReady(planContent)  // 通知 UI 展示计划确认卡片
+
+                            val decision = queue.poll(10, java.util.concurrent.TimeUnit.MINUTES)
+                                ?: PlanDecision.Cancel
+                            planDecisionQueue = null
+
+                            when (decision) {
+                                PlanDecision.Cancel -> {
+                                    log.info("AgentService: Plan Mode — 用户取消")
+                                    continueLoop = false
+                                }
+                                PlanDecision.Confirm -> {
+                                    log.info("AgentService: Plan Mode — 用户确认，注入执行指令")
+                                    messages.add(mapOf(
+                                        "role" to "user",
+                                        "content" to "计划已确认，请按计划逐步调用工具执行各步骤。"
+                                    ))
+                                }
+                                is PlanDecision.Edit -> {
+                                    log.info("AgentService: Plan Mode — 用户修改计划后确认")
+                                    messages.add(mapOf(
+                                        "role" to "user",
+                                        "content" to "已修改计划如下，请按修改后的计划执行：\n\n${decision.modifiedPlan}"
+                                    ))
+                                }
+                            }
+                            continue  // 无论何种决策，均重新进入循环顶部（Cancel 时 continueLoop=false 自然退出）
+                        }
+                    }
+
                     // 检查是否有工具调用
                     if (AgentToolExecutor.hasToolCall(response)) {
                         val toolResults = AgentToolExecutor.parseAndExecute(project, response)
@@ -203,6 +300,26 @@ object AgentService {
                                 toolResult = result.output,
                                 toolInput = toolInputSummary  // T10：工具参数摘要
                             ))
+
+                            // A8：错误自动修复循环 — 追踪 run_terminal 连续失败次数
+                            if (result.tool == "run_terminal") {
+                                if (!result.success) {
+                                    terminalFailCount++
+                                    log.info("AgentService: run_terminal 失败 ($terminalFailCount/$maxAutoFix)")
+                                    if (maxAutoFix > 0 && terminalFailCount >= maxAutoFix) {
+                                        log.warn("AgentService: 达到自动修复上限 ($maxAutoFix 次)，注入停止指令")
+                                        messages.add(mapOf(
+                                            "role" to "user",
+                                            "content" to "工具执行结果：\n$fullResult\n\n" +
+                                                "⚠️ 已连续 $maxAutoFix 次尝试修复失败，请停止继续尝试。" +
+                                                "直接向用户说明：失败的根本原因是什么，以及需要用户手动处理的步骤。"
+                                        ))
+                                        return@forEach  // 跳过后面的普通 message.add
+                                    }
+                                } else {
+                                    terminalFailCount = 0  // 成功则重置计数器
+                                }
+                            }
 
                             messages.add(mapOf(
                                 "role" to "user",
@@ -402,6 +519,78 @@ ${step.description}
                 onError(e)
             }
         }.start()
+    }
+
+    // ==================== A7：行内编辑 ====================
+
+    /**
+     * 行内编辑 — 对选中代码执行指令级修改
+     *
+     * @param project      当前项目
+     * @param selectedCode 选中的原始代码
+     * @param instruction  用户的修改指令（如"优化性能"、"添加注释"）
+     * @param onResult     修改完成，返回新代码（纯文本，无 markdown 包装）
+     * @param onError      错误回调
+     */
+    fun runInlineEdit(
+        project: Project,
+        selectedCode: String,
+        instruction: String,
+        onResult: (String) -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        val llmService = LlmService.getInstance()
+
+        Thread {
+            try {
+                val systemMsg = mapOf<String, Any>(
+                    "role" to "system",
+                    "content" to "你是专业的代码编辑助手，运行在 IntelliJ IDEA 中。\n" +
+                        "规则：\n" +
+                        "1. 只返回修改后的代码本身，不要任何解释\n" +
+                        "2. 不要用 markdown 代码块（```）包裹\n" +
+                        "3. 严格保持原有的缩进风格和代码结构\n" +
+                        "4. 只做用户指令要求的最小改动"
+                )
+                val userMsg = mapOf<String, Any>(
+                    "role" to "user",
+                    "content" to "修改指令：$instruction\n\n待修改代码：\n$selectedCode"
+                )
+
+                val resultBuilder = StringBuilder()
+                val latch = java.util.concurrent.CountDownLatch(1)
+                var streamError: Exception? = null
+
+                llmService.chatStream(
+                    messages = listOf(systemMsg, userMsg),
+                    onToken = { token -> resultBuilder.append(token) },
+                    onDone = { latch.countDown() },
+                    onError = { ex -> streamError = ex; latch.countDown() }
+                )
+
+                latch.await(60, java.util.concurrent.TimeUnit.SECONDS)
+
+                if (streamError != null) {
+                    onError(streamError!!)
+                } else {
+                    onResult(stripCodeFences(resultBuilder.toString().trim()))
+                }
+            } catch (ex: Exception) {
+                log.error("runInlineEdit 失败", ex)
+                onError(ex)
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    /** 剥除 LLM 可能多返回的 markdown 代码块标记 */
+    private fun stripCodeFences(text: String): String {
+        val lines = text.lines()
+        if (lines.isEmpty()) return text
+        var start = 0
+        var end = lines.size - 1
+        if (lines.getOrNull(start)?.trimStart()?.startsWith("```") == true) start++
+        if (lines.getOrNull(end)?.trim() == "```") end--
+        return if (start > end) text else lines.subList(start, end + 1).joinToString("\n")
     }
 
     // ==================== 私有辅助 ====================

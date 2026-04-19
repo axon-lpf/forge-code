@@ -158,6 +158,11 @@
     </div>
 </div>
 
+<!-- ===== A4：/ Slash Commands 面板 ===== -->
+<div class="slash-panel" id="slash-panel" style="display:none">
+    <div class="slash-panel-list" id="slash-panel-list"></div>
+</div>
+
 <!-- ===== @文件搜索弹窗 ===== -->
 <div class="file-picker" id="file-picker" style="display:none">
     <div class="file-picker-search">
@@ -216,6 +221,13 @@
             <div class="chat-mode-item-info">
                 <div class="chat-mode-item-title">Agent 仓库智聊</div>
                 <div class="chat-mode-item-desc">可规划、读写代码、调用工具的 Coding Agent</div>
+            </div>
+        </div>
+        <div class="chat-mode-item" data-mode="plan" onclick="selectChatMode('plan')">
+            <span class="chat-mode-item-icon">📋</span>
+            <div class="chat-mode-item-info">
+                <div class="chat-mode-item-title">Plan 规划模式</div>
+                <div class="chat-mode-item-desc">先输出执行计划，用户确认后再逐步执行</div>
             </div>
         </div>
     </div>

@@ -237,6 +237,15 @@ class CodeForgeChatPanel(private val project: Project) {
                 "getCheckpoints"     -> handleGetCheckpoints()
                 // P2-10：多模态图片输入
                 "imageInput"         -> handleImageInput(json)
+                // A6：Plan Mode 用户决策
+                "confirmPlan"        -> handleConfirmPlan()
+                "cancelPlan"         -> handleCancelPlan()
+                "editPlan"           -> handleEditPlan(json)
+                // A4：Slash Commands
+                "getRules"              -> handleGetRules()
+                "generateCommitMessage" -> handleGenerateCommitMessage()
+                // A5：工具配置面板
+                "openToolConfig"        -> handleOpenToolConfig()
                 else -> log.warn("未知 JS 消息类型: $type")
             }
         } catch (e: Exception) {
@@ -654,9 +663,10 @@ class CodeForgeChatPanel(private val project: Project) {
         }
     }
 
-    /** Agent 模式执行 */
+    /** Agent 模式执行（含 A6 Plan Mode） */
     private fun handleRunAgent(json: Map<*, *>) {
         val rawContent = json["content"] as? String ?: return
+        val isPlanMode = json["isPlanMode"] as? Boolean ?: false  // A6：Plan Mode 标志
 
         // 智能上下文注入：自动附加当前编辑器状态
         val editorContext = com.codeforge.plugin.idea.service.EditorContextProvider.getFormattedContext(project)
@@ -679,6 +689,13 @@ class CodeForgeChatPanel(private val project: Project) {
             project = project,
             userMessage = content,
             sessionHistory = history,
+            isPlanMode = isPlanMode,
+            onPlanReady = { planText ->
+                // A6：计划就绪，通知 JS 渲染计划确认卡片（Base64 编码避免注入）
+                val b64 = java.util.Base64.getEncoder()
+                    .encodeToString(planText.toByteArray(Charsets.UTF_8))
+                executeJS("window.onAgentPlanReady && window.onAgentPlanReady('$b64')")
+            },
             onCheckpointCreated = { checkpoints ->
                 // P2-9：将最新 Checkpoint 列表推送到 UI 时间线
                 val cpJson = gson.toJson(checkpoints)
@@ -858,6 +875,98 @@ class CodeForgeChatPanel(private val project: Project) {
                 }
             )
         }
+    }
+
+    // ==================== A4：Slash Commands ====================
+
+    /**
+     * /rules — 读取项目规则文件（.codeforge.md 或 ~/.codeforge/global.md）
+     * 将内容 Base64 编码后推送到 JS，由 window.onRulesContent 渲染
+     */
+    private fun handleGetRules() {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val rulesInfo = com.codeforge.plugin.idea.util.ProjectRulesLoader.loadInfo(project)
+            if (rulesInfo != null) {
+                val b64 = java.util.Base64.getEncoder()
+                    .encodeToString(rulesInfo.first.toByteArray(Charsets.UTF_8))
+                val sourceDisplay = com.codeforge.plugin.idea.util.ProjectRulesLoader
+                    .getSourceDisplayName(rulesInfo.second)
+                    .replace("\"", "\\\"")
+                executeJS("window.onRulesContent && window.onRulesContent({contentB64:'$b64',source:\"$sourceDisplay\"})")
+            } else {
+                executeJS("window.onRulesContent && window.onRulesContent(null)")
+            }
+        }
+    }
+
+    /**
+     * /commit — 获取 staged diff，流式生成 Conventional Commit 格式的提交信息
+     * 生成结果直接以 AI 回复形式展示在聊天面板中
+     */
+    private fun handleGenerateCommitMessage() {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val diff = com.codeforge.plugin.idea.review.ReviewService.getDiff(
+                project, emptyList(), staged = true
+            )
+            if (diff.isBlank()) {
+                executeJS("window.onError && window.onError('没有检测到已 staged 的变更，请先执行 git add')")
+                return@executeOnPooledThread
+            }
+            val messages = listOf(
+                mapOf<String, Any>("role" to "system",
+                    "content" to "你是代码提交规范专家。根据 git diff 生成一条 Conventional Commit 格式的提交信息。" +
+                        "格式：type(scope): description。type 可选：feat/fix/refactor/docs/test/chore。" +
+                        "只输出提交信息本身，不加任何解释或前缀。"),
+                mapOf<String, Any>("role" to "user",
+                    "content" to "根据以下 git diff 生成 commit message：\n\n$diff")
+            )
+            llmService.chatStream(
+                messages = messages,
+                onToken = { token ->
+                    val escaped = token.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+                    executeJS("window.appendToken && window.appendToken(`$escaped`)")
+                },
+                onDone = { executeJS("window.onStreamDone && window.onStreamDone()") },
+                onError = { ex ->
+                    val msg = (ex.message ?: "生成失败").replace("\"", "\\\"").replace("\n", "\\n")
+                    executeJS("window.onError && window.onError(\"$msg\")")
+                }
+            )
+        }
+    }
+
+    // ==================== A5：工具配置面板 ====================
+
+    /** 打开工具配置弹窗（由 /tools 指令触发） */
+    private fun handleOpenToolConfig() {
+        ApplicationManager.getApplication().invokeLater {
+            ToolConfigPanel(project).show()
+        }
+    }
+
+    // ==================== A6：Plan Mode 用户决策 ====================
+
+    /** 用户确认计划 — 唤醒 AgentService 继续执行 */
+    private fun handleConfirmPlan() {
+        com.codeforge.plugin.idea.agent.AgentService
+            .signalPlanDecision(com.codeforge.plugin.idea.agent.AgentService.PlanDecision.Confirm)
+        log.info("A6: 用户确认 Plan Mode 计划")
+    }
+
+    /** 用户取消计划 — 中止 AgentService 循环 */
+    private fun handleCancelPlan() {
+        com.codeforge.plugin.idea.agent.AgentService
+            .signalPlanDecision(com.codeforge.plugin.idea.agent.AgentService.PlanDecision.Cancel)
+        log.info("A6: 用户取消 Plan Mode 计划")
+        executeJS("window.onStreamDone && window.onStreamDone()")
+    }
+
+    /** 用户修改计划后确认 — 将修改后的计划注入 AgentService */
+    private fun handleEditPlan(json: Map<*, *>) {
+        val modifiedPlan = json["modifiedPlan"] as? String ?: return
+        com.codeforge.plugin.idea.agent.AgentService
+            .signalPlanDecision(com.codeforge.plugin.idea.agent.AgentService.PlanDecision.Edit(modifiedPlan))
+        log.info("A6: 用户修改并确认 Plan Mode 计划")
     }
 
     // ==================== P2-9：Checkpoint 回滚 ====================

@@ -17,7 +17,9 @@ const state = {
     atStartPos: -1,            // @ 符号在输入框中的位置
     // P2-10：多模态图片
     visionSupported: false,    // 当前模型是否支持 Vision
-    pendingImages: []          // 待发送的图片列表 [{base64, mimeType, dataUrl}]
+    pendingImages: [],         // 待发送的图片列表 [{base64, mimeType, dataUrl}]
+    // A4：Slash Commands
+    slashSearching: false      // 是否正在 / 指令搜索
 };
 
 // ==================== 初始化回调（由 Kotlin 调用）====================
@@ -436,11 +438,104 @@ function toggleAgentPanel(panelId) {
     if (arrow) arrow.textContent = isOpen ? '▶' : '▼';
 }
 
-/** 计划生成完成 */
+/** 计划生成完成（Spec 模式） */
 window.onPlanReady = function(steps) {
     removeThinking();
     renderPlanConfirm(steps);
 };
+
+// ==================== A6：Plan Mode 计划确认卡片 ====================
+
+/**
+ * A6：Agent Plan Mode — Kotlin 侧检测到 <plan> 标签后调用
+ * b64 是 Base64 编码的计划文本（UTF-8）
+ */
+window.onAgentPlanReady = function(b64) {
+    try {
+        const planText = decodeURIComponent(escape(atob(b64)));
+        removeThinking();
+        renderAgentPlanCard(planText);
+    } catch(e) { console.warn('onAgentPlanReady error', e); }
+};
+
+/** 渲染 Agent Plan Mode 计划确认卡片 */
+function renderAgentPlanCard(planText) {
+    const msgEl = document.createElement('div');
+    msgEl.className = 'message ai-message';
+    msgEl.id = 'agent-plan-card';
+
+    const iconEl = document.createElement('div');
+    iconEl.className = 'ai-icon';
+    iconEl.textContent = '🔥';
+
+    const bubbleEl = document.createElement('div');
+    bubbleEl.className = 'bubble agent-plan-card';
+
+    // 将计划文本转义后通过 marked 渲染为 HTML
+    const planHtml = (typeof marked !== 'undefined')
+        ? marked.parse(planText)
+        : planText.replace(/\n/g, '<br>');
+
+    bubbleEl.innerHTML = `
+        <div class="agent-plan-header">📋 执行计划</div>
+        <div class="agent-plan-content" id="agent-plan-content">${planHtml}</div>
+        <div class="agent-plan-edit-area" id="agent-plan-edit-area" style="display:none">
+            <textarea id="agent-plan-textarea" class="agent-plan-textarea">${escapeHtml(planText)}</textarea>
+        </div>
+        <div class="agent-plan-actions">
+            <button class="agent-plan-confirm-btn" onclick="confirmAgentPlan(this)">✅ 确认执行</button>
+            <button class="agent-plan-edit-btn"    onclick="toggleAgentPlanEdit(this)">✏️ 修改计划</button>
+            <button class="agent-plan-cancel-btn"  onclick="cancelAgentPlan(this)">✗ 取消</button>
+        </div>`;
+
+    msgEl.appendChild(iconEl);
+    msgEl.appendChild(bubbleEl);
+    document.getElementById('messages').appendChild(msgEl);
+    showMessages();
+    scrollToBottom();
+}
+
+/** A6：用户确认计划 */
+function confirmAgentPlan(btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ 执行中...';
+    btn.closest('.agent-plan-actions').querySelectorAll('button').forEach(b => b.disabled = true);
+    bridge.send({ type: 'confirmPlan' });
+    showThinking();
+}
+
+/** A6：展开/收起修改区域 */
+function toggleAgentPlanEdit(btn) {
+    const editArea = document.getElementById('agent-plan-edit-area');
+    const contentArea = document.getElementById('agent-plan-content');
+    const isEditing = editArea.style.display !== 'none';
+
+    if (isEditing) {
+        // 提交修改
+        const modifiedPlan = document.getElementById('agent-plan-textarea').value.trim();
+        if (!modifiedPlan) return;
+        btn.disabled = true;
+        btn.textContent = '⏳ 执行中...';
+        btn.closest('.agent-plan-actions').querySelectorAll('button').forEach(b => b.disabled = true);
+        bridge.send({ type: 'editPlan', modifiedPlan });
+        showThinking();
+    } else {
+        // 进入编辑模式
+        contentArea.style.display = 'none';
+        editArea.style.display = 'block';
+        btn.textContent = '✅ 提交修改';
+        // 还原 textarea 内容（当前计划文本）
+        const textarea = document.getElementById('agent-plan-textarea');
+        textarea.style.height = Math.min(textarea.scrollHeight, 320) + 'px';
+    }
+}
+
+/** A6：用户取消计划 */
+function cancelAgentPlan(btn) {
+    btn.closest('.agent-plan-actions').querySelectorAll('button').forEach(b => b.disabled = true);
+    btn.closest('.agent-plan-card').querySelector('.agent-plan-header').textContent = '📋 计划已取消';
+    bridge.send({ type: 'cancelPlan' });
+}
 
 /** 计划步骤状态更新 */
 window.onPlanStepUpdate = function(step) {
@@ -560,14 +655,18 @@ function selectChatMode(mode) {
         document.getElementById('chat-mode-icon').textContent = '○';
         document.getElementById('chat-mode-label').textContent = 'Chat 普通聊天';
         document.getElementById('user-input').placeholder = '输入问题... (Enter 发送)';
-        // 隐藏欢迎页 Vibe/Spec 模式卡片
+        if (modeCards) modeCards.style.display = 'none';
+    } else if (mode === 'plan') {
+        // A6：Plan 规划模式
+        document.getElementById('chat-mode-icon').textContent = '📋';
+        document.getElementById('chat-mode-label').textContent = 'Plan 规划模式';
+        document.getElementById('user-input').placeholder = '描述任务，AI 先输出执行计划，确认后再执行... (Enter 发送)';
         if (modeCards) modeCards.style.display = 'none';
     } else {
         // Agent 仓库智聊
         document.getElementById('chat-mode-icon').textContent = '</>';
         document.getElementById('chat-mode-label').textContent = 'Agent 仓库智聊';
         document.getElementById('user-input').placeholder = '描述任务，AI 将自动读取仓库、修改代码... (Enter 发送)';
-        // 显示欢迎页 Vibe/Spec 模式卡片
         if (modeCards) modeCards.style.display = 'flex';
     }
 }
@@ -641,6 +740,12 @@ function sendMessage() {
         return;
     }
 
+    // A6：Plan 规划模式 → Agent + isPlanMode=true
+    if (state.chatBigMode === 'plan') {
+        bridge.send({ type: 'runAgent', content: finalContent, sessionId: state.currentSessionId, isPlanMode: true });
+        return;
+    }
+
     // Agent 仓库智聊 → 所有子模式均走 Agent（包含仓库感知）
     // Spec 模式：先生成计划；Vibe/Agent：直接执行
     if (state.currentMode === 'spec') {
@@ -661,7 +766,21 @@ window.setInputAndSend = function(content) {
 function handleKeyDown(event) {
     if (event.key === 'Escape') {
         closeFilePicker();
+        closeSlashPanel();
         return;
+    }
+    // A4：Slash 面板打开时：上下键选择，Enter 执行
+    if (state.slashSearching) {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            navigateSlashPanel(event.key === 'ArrowDown' ? 1 : -1);
+            return;
+        }
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            selectSlashItem(slashPanelSelectedIndex);
+            return;
+        }
     }
     if (state.atSearching) {
         // @ 弹窗打开时：上下键选择文件
@@ -682,10 +801,11 @@ function handleKeyDown(event) {
     }
 }
 
-/** 输入框 oninput 统一处理（含 @ 检测） */
+/** 输入框 oninput 统一处理（含 @ 检测 + A4 / 检测） */
 function onInputChange(event) {
     autoResize(event.target);
     handleAtTrigger(event.target);
+    handleSlashTrigger(event.target);
 }
 
 function cancelMessage() {
@@ -782,6 +902,180 @@ function clearImagePreviews() {
 let filePickerSelectedIndex = -1;
 let filePickerResults = [];
 let atSearchTimer = null;
+
+// ==================== A4：Slash Commands ====================
+
+/** 所有内置 Slash 指令 */
+const SLASH_COMMANDS = [
+    { cmd: '/clear',      icon: '🗑️',  title: '清空会话',        desc: '开启新会话，清空当前对话' },
+    { cmd: '/help',       icon: '❓',  title: '帮助',             desc: '查看 CodeForge 功能说明' },
+    { cmd: '/plan',       icon: '📋',  title: '规划模式',         desc: '切换到 Plan Mode，先出计划再执行' },
+    { cmd: '/rules',      icon: '📝',  title: '项目规则',         desc: '查看 .codeforge.md 规则内容' },
+    { cmd: '/checkpoint', icon: '⏱️',  title: 'Checkpoint',      desc: '查看历史快照，选择回滚' },
+    { cmd: '/export',     icon: '📤',  title: '导出会话',         desc: '将当前会话导出为 Markdown 文件' },
+    { cmd: '/model',      icon: '⚡',  title: '切换模型',         desc: '快速切换 LLM 模型' },
+    { cmd: '/review',     icon: '🔍',  title: '代码审查',         desc: '切换到 Review 标签页' },
+    { cmd: '/commit',     icon: '✏️',  title: 'Commit Message',   desc: 'AI 分析 staged 变更，生成提交信息' },
+    { cmd: '/tools',      icon: '⚙️',  title: '工具配置',         desc: '配置各 Agent 工具的 Auto / 启用 / 关闭' },
+];
+
+let slashPanelSelectedIndex = 0;
+let slashFilteredCommands = [];
+
+/** 检测输入是否触发 / 指令面板 */
+function handleSlashTrigger(textarea) {
+    const val = textarea.value;
+    if (val.startsWith('/')) {
+        const query = val.slice(1).toLowerCase();
+        slashFilteredCommands = SLASH_COMMANDS.filter(c =>
+            c.cmd.slice(1).startsWith(query) ||
+            c.title.toLowerCase().includes(query)
+        );
+        if (slashFilteredCommands.length > 0) {
+            state.slashSearching = true;
+            slashPanelSelectedIndex = 0;
+            renderSlashPanel(slashFilteredCommands);
+            document.getElementById('slash-panel').style.display = 'block';
+        } else {
+            closeSlashPanel();
+        }
+    } else {
+        closeSlashPanel();
+    }
+}
+
+/** 渲染 Slash 面板列表 */
+function renderSlashPanel(commands) {
+    const listEl = document.getElementById('slash-panel-list');
+    listEl.innerHTML = commands.map((c, i) => `
+        <div class="slash-panel-item${i === slashPanelSelectedIndex ? ' active' : ''}"
+             data-index="${i}" onclick="selectSlashItem(${i})">
+            <span class="slash-panel-icon">${c.icon}</span>
+            <div class="slash-panel-info">
+                <div class="slash-panel-cmd">${c.cmd}</div>
+                <div class="slash-panel-desc">${c.desc}</div>
+            </div>
+        </div>`).join('') +
+        '<div class="slash-panel-hint">↑↓ 选择 · Enter 执行 · Esc 关闭</div>';
+}
+
+/** 关闭 Slash 面板 */
+function closeSlashPanel() {
+    document.getElementById('slash-panel').style.display = 'none';
+    state.slashSearching = false;
+    slashPanelSelectedIndex = 0;
+    slashFilteredCommands = [];
+}
+
+/** 键盘上下键导航 */
+function navigateSlashPanel(dir) {
+    slashPanelSelectedIndex = Math.max(0,
+        Math.min(slashFilteredCommands.length - 1, slashPanelSelectedIndex + dir));
+    renderSlashPanel(slashFilteredCommands);
+    document.querySelectorAll('.slash-panel-item')[slashPanelSelectedIndex]
+        ?.scrollIntoView({ block: 'nearest' });
+}
+
+/** 执行选中的 Slash 指令 */
+function selectSlashItem(index) {
+    const c = slashFilteredCommands[index];
+    if (!c) return;
+    executeSlashCommand(c.cmd);
+}
+
+/** 执行 Slash 指令 */
+function executeSlashCommand(cmd) {
+    // 清空输入框
+    const input = document.getElementById('user-input');
+    input.value = '';
+    input.style.height = '';
+    closeSlashPanel();
+
+    switch (cmd) {
+        case '/clear':
+            newSession();
+            break;
+
+        case '/help':
+            document.getElementById('welcome-screen').style.display = 'none';
+            document.getElementById('messages').style.display = 'flex';
+            addHistoryAiMessage(
+                '## ⚡ CodeForge 功能说明\n\n' +
+                '**Chat 模式** — 普通对话，解答代码和技术问题\n\n' +
+                '**Agent 模式** — AI 自动读取仓库、调用工具、修改代码\n\n' +
+                '**Plan 模式** — 先出执行计划，用户确认后再执行\n\n' +
+                '**快捷键**\n' +
+                '- `Enter` 发送  ·  `Shift+Enter` 换行\n' +
+                '- `@文件名` 引用项目文件  ·  `/` 触发指令面板\n' +
+                '- `Ctrl+V` 粘贴截图（Vision 模型）\n\n' +
+                '**Slash 指令**\n' +
+                SLASH_COMMANDS.map(c => `- \`${c.cmd}\` — ${c.desc}`).join('\n')
+            );
+            scrollToBottom();
+            break;
+
+        case '/plan':
+            selectChatMode('plan');
+            break;
+
+        case '/rules':
+            bridge.send({ type: 'getRules' });
+            break;
+
+        case '/checkpoint':
+            bridge.send({ type: 'getCheckpoints' });
+            break;
+
+        case '/export':
+            bridge.send({ type: 'exportSession', sessionId: state.currentSessionId });
+            break;
+
+        case '/model':
+            openModelPicker();
+            break;
+
+        case '/review':
+            switchTab('review');
+            setTimeout(reviewLoadFiles, 200);
+            break;
+
+        case '/commit':
+            document.getElementById('welcome-screen').style.display = 'none';
+            document.getElementById('messages').style.display = 'flex';
+            showThinking();
+            bridge.send({ type: 'generateCommitMessage' });
+            break;
+
+        case '/tools':
+            bridge.send({ type: 'openToolConfig' });
+            break;
+    }
+}
+
+/**
+ * A4：/rules 回调 — 显示规则文件内容
+ * data: {contentB64: string, source: string} | null
+ */
+window.onRulesContent = function(data) {
+    document.getElementById('welcome-screen').style.display = 'none';
+    document.getElementById('messages').style.display = 'flex';
+    if (!data || !data.contentB64) {
+        addHistoryAiMessage(
+            '📋 **未找到规则文件**\n\n' +
+            '可在项目根目录创建 `.codeforge.md` 定义 AI 行为规则，例如：\n\n' +
+            '```markdown\n## 技术栈\n- Kotlin + IntelliJ Platform SDK\n\n' +
+            '## 代码规范\n- 注释使用中文\n- 禁止使用 Lombok\n```'
+        );
+    } else {
+        try {
+            const content = decodeURIComponent(escape(atob(data.contentB64)));
+            addHistoryAiMessage(`📋 **${data.source}**\n\n\`\`\`markdown\n${content}\n\`\`\``);
+        } catch(e) {
+            addHistoryAiMessage('规则文件读取失败：' + e.message);
+        }
+    }
+    scrollToBottom();
+};
 
 /** 检测输入是否触发 @ */
 function handleAtTrigger(textarea) {
