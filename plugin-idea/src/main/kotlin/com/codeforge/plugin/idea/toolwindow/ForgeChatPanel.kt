@@ -7,6 +7,9 @@ import com.google.gson.Gson
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefBrowserBase
@@ -15,7 +18,9 @@ import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
 import org.cef.handler.CefLoadHandlerAdapter
 import java.awt.BorderLayout
+import java.io.File
 import javax.swing.JComponent
+import javax.swing.JFileChooser
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.SwingConstants
@@ -55,6 +60,12 @@ class CodeForgeChatPanel(private val project: Project) {
      * 格式：[{type: "image_url", image_url: {url: "data:image/...;base64,..."}}]
      */
     private val pendingImageParts = mutableListOf<Map<String, Any>>()
+
+    /**
+     * A3：待发送的文档列表（用户选择后暂存，随下一条消息发出）
+     * 格式：[filename] 内容... [/filename]
+     */
+    private val pendingDocParts = mutableListOf<Pair<String, String>>()
 
     init {
         if (JBCefApp.isSupported()) {
@@ -169,8 +180,16 @@ class CodeForgeChatPanel(private val project: Project) {
             // T15：加载项目规则文件信息，用于 UI 显示激活标识
             val rulesInfo = com.codeforge.plugin.idea.util.ProjectRulesLoader.loadInfo(project)
             val rulesLabel = if (rulesInfo != null) {
-                com.codeforge.plugin.idea.util.ProjectRulesLoader
-                    .getSourceDisplayName(rulesInfo.second)
+                rulesInfo.second.let { sourcePath ->
+                    val homeDir = System.getProperty("user.home") ?: ""
+                    when {
+                        sourcePath.contains(".codeforge/global.md") ->
+                            "~/.codeforge/global.md（全局规则）"
+                        sourcePath.endsWith(".codeforge.md") ->
+                            ".codeforge.md（项目规则）"
+                        else -> sourcePath
+                    }
+                }
             } else ""
 
             // P2-10：检测当前 Provider 是否支持 Vision
@@ -189,6 +208,11 @@ class CodeForgeChatPanel(private val project: Project) {
                 "userName" to sysUser,
                 // T15：规则文件激活标识（空字符串表示无规则文件）
                 "rulesLabel" to rulesLabel,
+                // B1：一键生成 Rules — 是否有现有规则文件
+                "hasRules" to (rulesInfo != null),
+                // B6：Prompt 模板列表
+                "promptTemplates" to com.codeforge.plugin.idea.settings.PromptTemplateManager.getAllTemplates()
+                    .map { mapOf("id" to it.id, "name" to it.name, "icon" to it.icon, "desc" to it.prompt.take(60)) },
                 // P2-10：Vision 支持标识
                 "visionSupported" to visionSupported
             )
@@ -215,6 +239,10 @@ class CodeForgeChatPanel(private val project: Project) {
                 "switchModel"   -> handleSwitchModel(json)
                 "getModels"     -> handleGetModels()
                 "newSession"    -> handleNewSession()
+                "clearSession"  -> handleClearSession()
+                "openRules"    -> handleOpenRules()
+                "openToolConfig" -> handleOpenToolConfig()
+                "generateCommit" -> handleGenerateCommit()
                 "loadSession"   -> handleLoadSession(json)
                 "deleteSession" -> handleDeleteSession(json)
                 "renameSession" -> handleRenameSession(json)
@@ -237,6 +265,16 @@ class CodeForgeChatPanel(private val project: Project) {
                 "getCheckpoints"     -> handleGetCheckpoints()
                 // P2-10：多模态图片输入
                 "imageInput"         -> handleImageInput(json)
+                // A2/A3：+ 号菜单触发文件选择
+                "openImagePicker"    -> handleOpenImagePicker()
+                "openDocumentPicker" -> handleOpenDocumentPicker()
+                // B1：一键生成规则文件
+                "generateRules"      -> handleGenerateRules()
+                // B3：需求澄清答案
+                "clarifyAnswer"      -> handleClarifyAnswer(json)
+                // B5：消息反馈 + 重新生成
+                "regenerate"         -> handleRegenerate(json)
+                "feedback"           -> handleFeedback(json)
                 else -> log.warn("未知 JS 消息类型: $type")
             }
         } catch (e: Exception) {
@@ -286,20 +324,40 @@ class CodeForgeChatPanel(private val project: Project) {
             pendingImageParts.clear()
             copy
         }
-        val messages: List<Map<String, Any>> = if (imageParts.isNotEmpty()) {
-            val contentParts = mutableListOf<Map<String, Any>>()
-            // 先放文本部分
-            if (content.isNotBlank()) {
-                contentParts.add(mapOf("type" to "text", "text" to content))
-            }
-            // 再放图片部分（已在 handleImageInput 中组装好）
-            contentParts.addAll(imageParts)
-            // 替换最后一条 user 消息
-            val withImage = historyMessages.dropLast(1).toMutableList()
-            withImage.add(mapOf("role" to "user", "content" to contentParts))
-            withImage
+        // A3：待发送文档内容
+        val docParts = synchronized(pendingDocParts) {
+            val copy = pendingDocParts.toList()
+            pendingDocParts.clear()
+            copy
+        }
+
+        // 组装文档附加文本
+        val docBlock = if (docParts.isNotEmpty()) {
+            docParts.joinToString("\n") { (name, text) ->
+                "[附件: $name]\n$text\n[/附件]"
+            } + "\n\n"
         } else {
-            historyMessages
+            ""
+        }
+
+        val messages: List<Map<String, Any>> = when {
+            imageParts.isNotEmpty() -> {
+                val contentParts = mutableListOf<Map<String, Any>>()
+                if ((docBlock + content).isNotBlank()) {
+                    contentParts.add(mapOf("type" to "text", "text" to docBlock + content))
+                }
+                contentParts.addAll(imageParts)
+                val withImage = historyMessages.dropLast(1).toMutableList()
+                withImage.add(mapOf("role" to "user", "content" to contentParts))
+                withImage
+            }
+            docParts.isNotEmpty() -> {
+                // 纯文档附加，无图片
+                val withDoc = historyMessages.dropLast(1).toMutableList()
+                withDoc.add(mapOf("role" to "user", "content" to docBlock + content))
+                withDoc
+            }
+            else -> historyMessages
         }
 
         // 重置 AI buffer
@@ -424,6 +482,127 @@ class CodeForgeChatPanel(private val project: Project) {
             SessionManager.pruneOldSessions(maxCount = 50)
         }
         executeJS("window.onNewSession && window.onNewSession(${gson.toJson(mapOf("sessionId" to session.id))})")
+    }
+
+    /** A4：清空当前会话消息 */
+    private fun handleClearSession() {
+        val sid = currentSessionId ?: return
+        SessionManager.clearSession(sid)
+        currentAiBuffer.clear()
+        executeJS("window.onSessionCleared && window.onSessionCleared()")
+    }
+
+    /** A4：打开规则文件编辑器 */
+    private fun handleOpenRules() {
+        executeJS("window.onRulesRequested && window.onRulesRequested()")
+    }
+
+    /** B1：一键生成规则文件 */
+    private fun handleGenerateRules() {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val buffer = StringBuilder()
+            executeJS("window.onRulesGenerationStart && window.onRulesGenerationStart()")
+
+            com.codeforge.plugin.idea.util.ProjectRulesLoader.generateRules(
+                project = project,
+                onDone = { generatedRules ->
+                    // 写入项目根目录的 .codeforge.md
+                    val projectPath = project.basePath
+                    if (projectPath != null) {
+                        val rulesFile = java.io.File(projectPath, ".codeforge.md")
+                        try {
+                            rulesFile.writeText(generatedRules, Charsets.UTF_8)
+                            com.codeforge.plugin.idea.util.ProjectRulesLoader.invalidate(projectPath)
+                            executeJS("window.onRulesGenerated && window.onRulesGenerated()")
+                            log.info("B1: 规则文件已生成并保存: ${rulesFile.absolutePath}")
+                        } catch (e: Exception) {
+                            log.error("B1: 保存规则文件失败", e)
+                            executeJS("window.onRulesGenerationError && window.onRulesGenerationError('保存失败: ${e.message}')")
+                        }
+                    }
+                },
+                onError = { ex ->
+                    executeJS("window.onRulesGenerationError && window.onRulesGenerationError('${ex.message ?: "生成失败"}')")
+                }
+            )
+        }
+    }
+
+    /** A5：打开工具配置面板 */
+    private fun handleOpenToolConfig() {
+        ApplicationManager.getApplication().invokeLater {
+            ToolConfigPanel.show(project)
+        }
+    }
+
+    /** B3：接收需求澄清答案 */
+    private fun handleClarifyAnswer(json: Map<*, *>) {
+        val answer = json["answer"] as? String ?: ""
+        com.codeforge.plugin.idea.agent.AgentService.pendingClarifyAnswer = answer
+    }
+
+    /** B5：重新生成上一条回复 */
+    private fun handleRegenerate(json: Map<*, *>) {
+        val sid = currentSessionId ?: return
+        val messages = SessionManager.getMessages(sid)
+        if (messages.size < 2) return
+
+        // 找到最后一条 user 消息，重新发送
+        val lastUserMsg = messages.filter { (it["role"] as? String) == "user" }.lastOrNull() ?: return
+        val userContent = lastUserMsg["content"] as? String ?: ""
+
+        // 删除最后一条 assistant 消息
+        val updatedMessages = messages.dropLast(1).filter { !(it["role"] == "assistant" && it == messages.last()) }
+        // 重新调用 chatStream
+        currentEventSource?.cancel()
+        currentAiBuffer.clear()
+
+        llmService.chatStream(
+            messages = updatedMessages.map { mapOf("role" to (it["role"] as? String ?: ""), "content" to (it["content"] as? String ?: "")) },
+            onToken = { token ->
+                currentAiBuffer.append(token)
+                val escaped = token.replace("\\","\\\\").replace("`","\\`").replace("$","\\$")
+                executeJS("window.appendToken && window.appendToken(`$escaped`)")
+            },
+            onDone = {
+                val aiContent = currentAiBuffer.toString()
+                if (aiContent.isNotBlank()) {
+                    SessionManager.appendMessage(sid, "assistant", aiContent)
+                }
+                currentAiBuffer.clear()
+                executeJS("window.onStreamDone && window.onStreamDone()")
+            },
+            onError = { ex ->
+                val msg = (ex.message ?: "未知错误").replace("\"","\\\"").replace("\n","\\n")
+                executeJS("window.onError && window.onError(\"$msg\")")
+            },
+            onAutoRetry = { failedProvider, newProvider, newModel ->
+                val failedDisplay = failedProvider.replace("\"", "\\\"")
+                val newDisplay = newProvider.replace("\"", "\\\"")
+                val modelDisplay = newModel.replace("\"", "\\\"")
+                executeJS("window.onAutoRetry && window.onAutoRetry(\"$failedDisplay\", \"$newDisplay\", \"$modelDisplay\")")
+            }
+        )
+    }
+
+    /** B5：记录消息反馈 */
+    private fun handleFeedback(json: Map<*, *>) {
+        val type = json["feedbackType"] as? String ?: return
+        val reason = json["reason"] as? String
+        val sid = currentSessionId ?: return
+        log.info("B5: 收到反馈 type=$type reason=$reason session=$sid")
+        // 反馈数据可后续写入 ForgeSettings 或发送至分析服务
+    }
+
+    /** A4：生成 Commit Message */
+    private fun handleGenerateCommit() {
+        ApplicationManager.getApplication().invokeLater {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                "请使用工具栏「📝 Commit」按钮生成 Commit Message。\n\n或者在 Git 面板中右键选择「Generate Commit Message」。",
+                "Generate Commit Message"
+            )
+        }
     }
 
     /** 加载指定会话（切换会话） */
@@ -660,10 +839,30 @@ class CodeForgeChatPanel(private val project: Project) {
 
         // 智能上下文注入：自动附加当前编辑器状态
         val editorContext = com.codeforge.plugin.idea.service.EditorContextProvider.getFormattedContext(project)
-        val content = if (editorContext.isNotBlank()) {
-            "$rawContent\n$editorContext"
+
+        // P2-10/A3：收集附件
+        val imageParts = synchronized(pendingImageParts) {
+            val copy = pendingImageParts.toList()
+            pendingImageParts.clear()
+            copy
+        }
+        val docParts = synchronized(pendingDocParts) {
+            val copy = pendingDocParts.toList()
+            pendingDocParts.clear()
+            copy
+        }
+        val docBlock = if (docParts.isNotEmpty()) {
+            docParts.joinToString("\n") { (name, text) ->
+                "[附件: $name]\n$text\n[/附件]"
+            } + "\n\n"
         } else {
-            rawContent
+            ""
+        }
+
+        val content = if (editorContext.isNotBlank()) {
+            "$docBlock$rawContent\n$editorContext"
+        } else {
+            "$docBlock$rawContent"
         }
 
         val sid = currentSessionId ?: run {
@@ -672,17 +871,37 @@ class CodeForgeChatPanel(private val project: Project) {
             currentSessionId = s.id; s.id
         }
         SessionManager.appendMessage(sid, "user", content)
+
+        // 构建消息列表（带图片多模态）
         val history = SessionManager.getMessages(sid)
+        val messages: List<Map<String, Any>> = if (imageParts.isNotEmpty()) {
+            val contentParts = mutableListOf<Map<String, Any>>()
+            if (content.isNotBlank()) {
+                contentParts.add(mapOf("type" to "text", "text" to content))
+            }
+            contentParts.addAll(imageParts)
+            val withImage = history.dropLast(1).toMutableList()
+            withImage.add(mapOf("role" to "user", "content" to contentParts))
+            withImage
+        } else {
+            history
+        }
+
         currentAiBuffer.clear()
 
         com.codeforge.plugin.idea.agent.AgentService.runAgent(
             project = project,
             userMessage = content,
-            sessionHistory = history,
+            sessionHistory = messages,
             onCheckpointCreated = { checkpoints ->
                 // P2-9：将最新 Checkpoint 列表推送到 UI 时间线
                 val cpJson = gson.toJson(checkpoints)
                 executeJS("window.onCheckpointList && window.onCheckpointList($cpJson)")
+            },
+            // B3：需求澄清
+            onClarifyNeeded = { questions ->
+                val json = gson.toJson(questions)
+                executeJS("window.renderClarifyCard && window.renderClarifyCard($json)")
             },
             onStep = { step ->
                 // toolResult 可能含有文件内容（反引号、$、\），需要 Base64 编码避免 JS 注入问题
@@ -734,18 +953,52 @@ class CodeForgeChatPanel(private val project: Project) {
 
     /** Spec 模式：生成执行计划 */
     private fun handleGeneratePlan(json: Map<*, *>) {
-        val content = json["content"] as? String ?: return
+        val rawContent = json["content"] as? String ?: return
+
+        // P2-10/A3：收集附件
+        val imageParts = synchronized(pendingImageParts) {
+            val copy = pendingImageParts.toList()
+            pendingImageParts.clear()
+            copy
+        }
+        val docParts = synchronized(pendingDocParts) {
+            val copy = pendingDocParts.toList()
+            pendingDocParts.clear()
+            copy
+        }
+        val docBlock = if (docParts.isNotEmpty()) {
+            docParts.joinToString("\n") { (name, text) ->
+                "[附件: $name]\n$text\n[/附件]"
+            } + "\n\n"
+        } else {
+            ""
+        }
+        val content = docBlock + rawContent
+
         val sid = currentSessionId ?: run {
             val activeInfo = llmService.getActiveInfo()
             val s = SessionManager.createSession(activeInfo.provider ?: "", activeInfo.model ?: "")
             currentSessionId = s.id; s.id
         }
+        SessionManager.appendMessage(sid, "user", content)
         val history = SessionManager.getMessages(sid)
+        val messages: List<Map<String, Any>> = if (imageParts.isNotEmpty()) {
+            val contentParts = mutableListOf<Map<String, Any>>()
+            if (content.isNotBlank()) {
+                contentParts.add(mapOf("type" to "text", "text" to content))
+            }
+            contentParts.addAll(imageParts)
+            val withImage = history.dropLast(1).toMutableList()
+            withImage.add(mapOf("role" to "user", "content" to contentParts))
+            withImage
+        } else {
+            history
+        }
         currentAiBuffer.clear()
 
         com.codeforge.plugin.idea.agent.AgentService.generatePlan(
             userRequirement = content,
-            sessionHistory = history,
+            sessionHistory = messages,
             onPlanToken = { token ->
                 currentAiBuffer.append(token)
                 val escaped = token.replace("\\","\\\\").replace("`","\\`").replace("$","\\$")
@@ -911,7 +1164,62 @@ class CodeForgeChatPanel(private val project: Project) {
         synchronized(pendingImageParts) {
             pendingImageParts.add(imagePart)
         }
-        log.info("P2-10: 收到图片输入，mimeType=$mimeType，size=${base64.length} chars (base64)")
+log.info("P2-10: 收到图片输入，mimeType=$mimeType，size=${base64.length} chars (base64)")
+    }
+
+    /** A2：+ 号菜单点击"图片"，弹出系统文件选择框 */
+    private fun handleOpenImagePicker() {
+        val descriptor = FileChooserDescriptor(true, false, false, false, false, false)
+        descriptor.title = "选择图片"
+        descriptor.description = "选择要附加的图片文件（PNG/JPG/GIF/WebP）"
+        FileChooser.chooseFiles(descriptor, project, null) { files ->
+            for (file in files) {
+                val path = file.path
+                if (!file.isValid) continue
+                val bytes = file.inputStream.use { it.readBytes() }
+                val base64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                val mimeType = when {
+                    path.endsWith(".png", ignoreCase = true) -> "image/png"
+                    path.endsWith(".gif", ignoreCase = true) -> "image/gif"
+                    path.endsWith(".webp", ignoreCase = true) -> "image/webp"
+                    path.endsWith(".jpg", ignoreCase = true) || path.endsWith(".jpeg", ignoreCase = true) -> "image/jpeg"
+                    else -> "image/png"
+                }
+                val dataUrl = "data:$mimeType;base64,$base64"
+                val imagePart = mapOf(
+                    "type" to "image_url",
+                    "image_url" to mapOf("url" to dataUrl)
+                )
+                synchronized(pendingImageParts) {
+                    pendingImageParts.add(imagePart)
+                }
+                executeJS("window.addImagePreview && window.addImagePreview('${base64.replace("'", "\\'")}', '$mimeType', '${dataUrl.replace("'", "\\'")}')")
+            }
+        }
+    }
+
+    /** A3：+ 号菜单点击"文档"，弹出系统文件选择框 */
+    private fun handleOpenDocumentPicker() {
+        val descriptor = FileChooserDescriptor(true, false, false, false, false, false)
+        descriptor.title = "选择文档"
+        descriptor.description = "选择要附加的文档文件（MD/TXT/PDF/代码文件）"
+        FileChooser.chooseFiles(descriptor, project, null) { files ->
+            for (file in files) {
+                val path = file.path
+                if (!file.isValid) continue
+                val fileName = file.name
+                val result = com.codeforge.plugin.idea.util.DocumentExtractor.extract(path)
+                if (result.success && result.content != null) {
+                    synchronized(pendingDocParts) {
+                        pendingDocParts.add(fileName to result.content)
+                    }
+                    // 通知 JS 显示文档预览标签
+                    executeJS("window.addDocumentPreview && window.addDocumentPreview('$fileName')")
+                } else {
+                    log.warn("A3: 文档提取失败: $path, error: ${result.error}")
+                }
+            }
+        }
     }
 
     // ==================== 工具方法 ====================

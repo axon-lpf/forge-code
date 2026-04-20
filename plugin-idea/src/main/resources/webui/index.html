@@ -175,7 +175,11 @@
     <div class="ctx-tags" id="ctx-tags" style="display:none"></div>
     <!-- P2-10：图片预览区（粘贴截图时显示） -->
     <div class="image-preview-area" id="image-preview-area" style="display:none"></div>
+    <!-- A3：文档预览区（选择文档时显示） -->
+    <div class="doc-preview-area" id="doc-preview-area" style="display:none"></div>
     <div class="input-box">
+        <!-- P0-A1：+ 号附件菜单按钮 -->
+        <button class="plus-btn" id="plus-btn" onclick="togglePlusMenu()" title="添加附件">+</button>
         <textarea
             id="user-input"
             placeholder="输入消息... (@引用文件，Shift+Enter 换行，Enter 发送)"
@@ -227,6 +231,42 @@
     <div class="model-dropdown-list" id="model-dropdown-list"></div>
 </div>
 <div class="model-dropdown-overlay" id="model-dropdown-overlay" style="display:none" onclick="closeModelDropdown()"></div>
+
+<!-- P0-A1：+ 号附件菜单 -->
+<div class="plus-menu" id="plus-menu" style="display:none">
+    <div class="plus-menu-item" onclick="handlePlusMenuAction('image')">
+        <span class="plus-menu-icon">🖼</span>
+        <div class="plus-menu-info">
+            <div class="plus-menu-title">图片</div>
+            <div class="plus-menu-desc">附加截图或照片</div>
+        </div>
+    </div>
+    <div class="plus-menu-item" onclick="handlePlusMenuAction('document')">
+        <span class="plus-menu-icon">📄</span>
+        <div class="plus-menu-info">
+            <div class="plus-menu-title">文档</div>
+            <div class="plus-menu-desc">附加 PDF/TXT/MD 等文档</div>
+        </div>
+    </div>
+    <div class="plus-menu-item" onclick="handlePlusMenuAction('slash')">
+        <span class="plus-menu-icon">/</span>
+        <div class="plus-menu-info">
+            <div class="plus-menu-title">指令</div>
+            <div class="plus-menu-desc">打开 Slash Commands</div>
+        </div>
+    </div>
+</div>
+<div class="plus-menu-overlay" id="plus-menu-overlay" style="display:none" onclick="closePlusMenu()"></div>
+
+<!-- P0-A4：Slash Commands 面板 -->
+<div class="slash-panel" id="slash-panel" style="display:none">
+    <div class="slash-search">
+        <span class="slash-search-icon">/</span>
+        <input type="text" id="slash-search-input" placeholder="搜索指令..." autocomplete="off" oninput="onSlashSearch(this.value)">
+    </div>
+    <div class="slash-list" id="slash-list"></div>
+</div>
+<div class="slash-overlay" id="slash-overlay" style="display:none" onclick="closeSlashPanel()"></div>
 
 <!-- ===== 离线提示 ===== -->
 <div class="offline-banner" id="offline-banner" style="display:none">

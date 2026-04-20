@@ -21,6 +21,9 @@ object AgentService {
     /** 全局取消标志，调用 cancel() 后当前 Agent 循环会在下一轮检查时退出 */
     private val cancelFlag = AtomicBoolean(false)
 
+    /** B3：需求澄清答案（JS Bridge 设置） */
+    @Volatile var pendingClarifyAnswer: String? = null
+
     fun cancel() {
         cancelFlag.set(true)
         log.info("AgentService: 收到取消指令")
@@ -79,7 +82,8 @@ object AgentService {
         onToken: (String) -> Unit,
         onDone: () -> Unit,
         onError: (Exception) -> Unit,
-        onCheckpointCreated: (List<Map<String, Any>>) -> Unit = {}  // P2-9：Checkpoint 列表推送回调
+        onCheckpointCreated: (List<Map<String, Any>>) -> Unit = {},  // P2-9：Checkpoint 列表推送回调
+        onClarifyNeeded: (List<String>) -> Unit = {}  // B3：需求澄清回调（推送澄清卡片）
     ) {
         val llmService = LlmService.getInstance()
 
@@ -129,6 +133,12 @@ object AgentService {
                         }
                         append("\n\n== 可用工具 ==\n")
                         append(AgentToolExecutor.TOOL_DEFINITIONS)
+                        // B2：自动注入记忆
+                        val memoryPrompt = com.codeforge.plugin.idea.agent.MemoryManager.formatAsPrompt(project.basePath ?: "")
+                        if (memoryPrompt.isNotBlank()) {
+                            append("\n\n")
+                            append(memoryPrompt)
+                        }
                         append("""
 
 重要规则：
@@ -136,7 +146,8 @@ object AgentService {
 - 回答任何关于项目的问题时，必须先用 read_file 或 list_files 工具读取实际文件内容，不要凭空猜测
 - 使用工具时严格按照格式，每次只调用一个工具，等待结果后再继续
 - 当任务完成时，直接给出最终回复，不要再调用工具
-- 不要重复调用同一个工具和路径，避免无限循环""")
+- 不要重复调用同一个工具和路径，避免无限循环
+- 如果用户的需求描述不清晰或缺少关键信息，在回复前先输出 `<clarify>问题1|问题2|问题3</clarify>` 标签，列出需要澄清的问题，等待用户回答后再继续""")
                     })
 
                 // 当前对话消息列表
@@ -185,6 +196,28 @@ object AgentService {
                     }
                     messages.add(mapOf("role" to "assistant", "content" to response))
 
+                    // B3：检查是否有 <clarify> 标签
+                    if (AgentToolExecutor.hasClarify(response)) {
+                        val questions = AgentToolExecutor.parseClarify(response)
+                        // 推送澄清卡片到 UI 并等待答案
+                        onStep(AgentStep(StepType.THINKING, ""))
+                        onClarifyNeeded(questions)
+                        // 等待 JS Bridge 设置答案（轮询，最多等 5 分钟）
+                        var waited = 0
+                        while (pendingClarifyAnswer == null && waited < 300_000 && !cancelFlag.get()) {
+                            Thread.sleep(200)
+                            waited += 200
+                        }
+                        val answer = pendingClarifyAnswer ?: "（用户未回答）"
+                        pendingClarifyAnswer = null
+                        messages.add(mapOf(
+                            "role" to "user",
+                            "content" to "用户回答：$answer\n\n请根据用户回答继续执行任务。"
+                        ))
+                        onStep(AgentStep(StepType.THINKING, ""))
+                        continue  // 继续下一轮循环
+                    }
+
                     // 检查是否有工具调用
                     if (AgentToolExecutor.hasToolCall(response)) {
                         val toolResults = AgentToolExecutor.parseAndExecute(project, response)
@@ -209,6 +242,77 @@ object AgentService {
                                 "content" to "工具执行结果：\n$fullResult\n\n请继续。"
                             ))
                         }
+
+                        // ── A8：错误自动修复循环 ─────────────────────────────────
+                        val settings = com.codeforge.plugin.idea.settings.CodeForgeSettings.getInstance()
+                        if (settings.autoFixEnabled) {
+                            val failedTerminal = toolResults.find {
+                                it.tool == "run_terminal" && !it.success
+                            }
+                            if (failedTerminal != null) {
+                                // 提取错误输出
+                                val errorOutput = failedTerminal.output.ifBlank { failedTerminal.error ?: "" }
+                                var retryCount = 0
+                                val maxRetries = settings.autoFixMaxRetries
+                                var autoFixed = false
+
+                                while (retryCount < maxRetries && !autoFixed && !cancelFlag.get()) {
+                                    retryCount++
+                                    onStep(AgentStep(
+                                        StepType.THINKING,
+                                        "🔄 第 $retryCount 次自动修复尝试（最多 $maxRetries 次）..."
+                                    ))
+
+                                    // 将错误信息注入对话历史，请求 LLM 修复
+                                    val fixMessages = messages.toMutableList()
+                                    fixMessages.add(mapOf(
+                                        "role" to "user",
+                                        "content" to "上次命令执行失败，错误输出如下：\n$errorOutput\n\n请分析错误原因并生成修复后的命令。输出格式：\n<tool_call>\n{\"tool\": \"run_terminal\", \"command\": \"修复后的命令\"}\n</tool_call>"
+                                    ))
+
+                                    val fixBuffer = StringBuilder()
+                                    val fixDone = AtomicBoolean(false)
+                                    llmService.chatStream(
+                                        messages = fixMessages,
+                                        onToken = { token -> fixBuffer.append(token) },
+                                        onDone = { fixDone.set(true) },
+                                        onError = { /* 忽略修复请求的错误 */ }
+                                    )
+
+                                    var waited = 0
+                                    while (!fixDone.get() && waited < 60_000) {
+                                        Thread.sleep(100)
+                                        waited += 100
+                                    }
+
+                                    val fixResponse = fixBuffer.toString()
+                                    if (AgentToolExecutor.hasToolCall(fixResponse)) {
+                                        val fixResults = AgentToolExecutor.parseAndExecute(project, fixResponse)
+                                        val terminalResult = fixResults.find { it.tool == "run_terminal" }
+                                        if (terminalResult != null && terminalResult.success) {
+                                            // 修复成功，继续正常流程
+                                            val successMsg = "工具执行结果：\n${terminalResult.output}\n\n请继续。"
+                                            messages.add(mapOf("role" to "user", "content" to successMsg))
+                                            onStep(AgentStep(
+                                                StepType.TOOL_CALL, "success",
+                                                toolName = "run_terminal",
+                                                toolResult = terminalResult.output,
+                                                toolInput = "auto-fix attempt $retryCount"
+                                            ))
+                                            autoFixed = true
+                                        } else {
+                                            val failMsg = "工具执行结果：\n${terminalResult?.error ?: "修复失败"}\n\n请继续。"
+                                            messages.add(mapOf("role" to "user", "content" to failMsg))
+                                        }
+                                    } else {
+                                        // LLM 没有输出工具调用，修复结束
+                                        messages.add(mapOf("role" to "user", "content" to "修复尝试完成，请继续或结束任务。"))
+                                        autoFixed = true
+                                    }
+                                }
+                            }
+                        }
+
                         // 工具全部执行完后，再发 THINKING 通知 UI 进入下一轮等待
                         onStep(AgentStep(StepType.THINKING, ""))
                     } else {

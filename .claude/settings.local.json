@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew compileKotlin --quiet)",
+      "Bash(git bash *)",
+      "Bash(cmd //c \"gradlew compileKotlin --quiet\")",
+      "Bash(cmd /c \"gradlew.bat compileKotlin --quiet 2>&1\")",
+      "Bash(java -version)",
+      "mcp__ide__getDiagnostics",
+      "Bash(./gradlew :plugin-idea:compileKotlin)"
+    ]
+  }
+}

@@ -35,6 +35,12 @@ class LlmService {
         val displayName: String?
     )
 
+    /** B4：Token 用量信息 */
+    data class Usage(
+        val promptTokens: Int,
+        val completionTokens: Int
+    )
+
     data class ProviderInfo(
         val name: String,
         val displayName: String,
@@ -151,13 +157,15 @@ class LlmService {
      * @param onDone       流式结束时的回调
      * @param onError      出错时的回调（包含错误信息 + 备选模型列表）
      * @param onAutoRetry  自动切换模型重试时的通知（返回切换到的 provider 和 model）
+     * @param onUsage      B4：收到 usage 信息时的回调 (promptTokens, completionTokens)
      */
     fun chatStream(
         messages: List<Map<String, Any>>,
         onToken: (String) -> Unit,
         onDone: () -> Unit,
         onError: (Exception) -> Unit,
-        onAutoRetry: ((failedProvider: String, newProvider: String, newModel: String) -> Unit)? = null
+        onAutoRetry: ((failedProvider: String, newProvider: String, newModel: String) -> Unit)? = null,
+        onUsage: ((promptTokens: Int, completionTokens: Int) -> Unit)? = null
     ) {
         ensureInitialized()
 
@@ -172,7 +180,11 @@ class LlmService {
         // 防止 onDone 被 [DONE] 事件和 onClosed 双重触发
         val doneCalled = java.util.concurrent.atomic.AtomicBoolean(false)
         val safeOnDone = {
-            if (doneCalled.compareAndSet(false, true)) onDone()
+            if (doneCalled.compareAndSet(false, true)) {
+                // B4：调用 onUsage 回调（promptTokens=0 表示流式接口不返回精确值，显示为估算）
+                onUsage?.invoke(0, 0)
+                onDone()
+            }
         }
 
         // 调用 Provider 流式接口
@@ -204,7 +216,12 @@ class LlmService {
 
                     val retryRequest = buildChatRequest(messages)
                     val retryDoneCalled = java.util.concurrent.atomic.AtomicBoolean(false)
-                    val safeRetryDone = { if (retryDoneCalled.compareAndSet(false, true)) onDone() }
+                    val safeRetryDone = {
+            if (retryDoneCalled.compareAndSet(false, true)) {
+                onUsage?.invoke(0, 0)
+                onDone()
+            }
+        }
                     fallback.chatCompletionStream(
                         retryRequest,
                         { data ->

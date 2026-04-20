@@ -196,18 +196,87 @@ object ProjectRulesLoader {
     }
 
     /**
-     * 获取友好的规则文件来源显示名称
-     * 例："/home/user/.codeforge/global.md" → "~/.codeforge/global.md（全局）"
-     *     "/project/.codeforge.md" → ".codeforge.md（项目）"
+     * TB01：生成规则文件
+     * 分析项目结构，调用 LLM 生成适配的 .codeforge.md 规则
      */
-    fun getSourceDisplayName(sourcePath: String): String {
-        val homeDir = System.getProperty("user.home") ?: ""
-        return when {
-            sourcePath.contains(".codeforge/global.md") ->
-                "~/.codeforge/global.md（全局规则）"
-            sourcePath.endsWith(PROJECT_RULES_FILE) ->
-                "$PROJECT_RULES_FILE（项目规则）"
-            else -> sourcePath
+    fun generateRules(project: Project, onDone: (String) -> Unit, onError: (Exception) -> Unit) {
+        val projectPath = project.basePath ?: run {
+            onError(Exception("无法获取项目路径"))
+            return
         }
+
+        // 收集项目信息
+        val projectDir = java.io.File(projectPath)
+        val techStack = detectTechStack(projectDir)
+        val dirStructure = projectDir.listFiles()?.filter { !it.name.startsWith(".") }?.take(20)
+            ?.joinToString("\n") { "  ${if (it.isDirectory) "📁" else "📄"} ${it.name}" } ?: ""
+
+        // 已有规则内容（如果有的话）
+        val existingRules = load(project)
+
+        val prompt = buildString {
+            appendLine("你是一个专业的 AI 编程助手规则生成专家。请为以下项目生成一份 `.codeforge.md` 规则文件。")
+            appendLine()
+            appendLine("## 项目信息")
+            appendLine("**技术栈：** $techStack")
+            appendLine("**目录结构（顶层）：**")
+            appendLine(dirStructure)
+            if (existingRules.isNotBlank()) {
+                appendLine()
+                appendLine("**现有规则（供参考，不要完全复制）：**")
+                appendLine(existingRules)
+            }
+            appendLine()
+            appendLine("## 要求")
+            appendLine("- 生成一份适合该项目的 `.codeforge.md` 规则文件")
+            appendLine("- 规则应包含：代码风格、语言偏好、架构约束、常见任务的处理方式")
+            appendLine("- 用中文输出，内容简洁实用，总长度控制在 500-1500 字")
+            appendLine("- 只输出规则内容，不要包含任何说明文字")
+        }
+
+        val messages = listOf(
+            mapOf("role" to "user", "content" to prompt)
+        )
+
+        val buffer = StringBuilder()
+        com.codeforge.plugin.idea.service.LlmService.getInstance().chatStream(
+            messages = messages,
+            onToken = { token -> buffer.append(token) },
+            onDone = {
+                val generated = buffer.toString()
+                    .replace("```markdown", "")
+                    .replace("```md", "")
+                    .replace("```", "")
+                    .trim()
+                onDone(generated)
+            },
+            onError = onError,
+            onAutoRetry = { _, _, _ -> }
+        )
+    }
+
+    /**
+     * 检测项目技术栈
+     */
+    private fun detectTechStack(projectDir: java.io.File): String {
+        val indicators = mutableListOf<String>()
+
+        fun hasFile(name: String) = projectDir.listFiles()?.any { it.name == name } == true
+        fun hasDir(name: String) = projectDir.listFiles()?.any { it.isDirectory && it.name == name } == true
+
+        if (hasFile("build.gradle") || hasFile("build.gradle.kts")) indicators.add("Gradle/Java")
+        if (hasFile("pom.xml")) indicators.add("Maven/Java")
+        if (hasFile("package.json")) indicators.add("Node.js")
+        if (hasFile("go.mod")) indicators.add("Go")
+        if (hasFile("Cargo.toml")) indicators.add("Rust")
+        if (hasFile("requirements.txt") || hasFile("setup.py")) indicators.add("Python")
+        if (hasFile("Pipfile") || hasFile("pyproject.toml")) indicators.add("Python")
+        if (hasDir("src/main/kotlin")) indicators.add("Kotlin")
+        if (hasDir("src/main/java")) indicators.add("Java")
+        if (hasDir("src")) indicators.add("Java/Go/C++")
+        if (hasFile("CMakeLists.txt")) indicators.add("C++")
+        if (hasDir(".git")) indicators.add("Git")
+
+        return indicators.joinToString(" / ").ifBlank { "未知" }
     }
 }

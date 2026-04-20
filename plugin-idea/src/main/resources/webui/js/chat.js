@@ -15,9 +15,16 @@ const state = {
     ctxFiles: [],              // 已引用文件列表 [{path, name, content}]
     atSearching: false,        // 是否正在 @ 搜索
     atStartPos: -1,            // @ 符号在输入框中的位置
+    // A4：Slash Commands
+    slashActive: false,       // slash 面板是否打开
+    slashStartPos: -1,         // / 符号在输入框中的位置
+    slashSelectedIndex: 0,    // 当前选中的指令索引
+    slashFilteredList: [],    // 过滤后的指令列表
     // P2-10：多模态图片
     visionSupported: false,    // 当前模型是否支持 Vision
-    pendingImages: []          // 待发送的图片列表 [{base64, mimeType, dataUrl}]
+    pendingImages: [],         // 待发送的图片列表 [{base64, mimeType, dataUrl}]
+    // B1：一键生成 Rules
+    hasRules: false           // 当前项目是否有 .codeforge.md 规则文件
 };
 
 // ==================== 初始化回调（由 Kotlin 调用）====================
@@ -30,6 +37,57 @@ window.onInit = function(data) {
     if (!data.backendOnline) {
         document.getElementById('offline-banner').style.display = 'flex';
     }
+    // A4：清空会话后回调
+    window.onSessionCleared = function() {
+        state.messages = [];
+        document.getElementById('messages').innerHTML = '';
+        document.getElementById('welcome-screen').style.display = 'flex';
+    };
+    // B1：请求打开规则文件
+    window.onRulesRequested = function() {
+        // 根据是否有现有规则文件决定显示内容
+        if (state.hasRules) {
+            const helpText = `**项目规则 (.codeforge.md)**\n\n已有规则文件已激活。\n\n如需编辑规则，请直接修改项目根目录的 \`.codeforge.md\` 文件。\n\n如需重新生成，点击下方按钮。`;
+            const msgEl = addHistoryAiMessage(helpText);
+            // 添加一键生成按钮
+            const btn = document.createElement('button');
+            btn.className = 'suggestion';
+            btn.textContent = '🔄 重新生成规则';
+            btn.style.marginTop = '8px';
+            btn.onclick = function() {
+                bridge.send({ type: 'generateRules' });
+            };
+            msgEl.querySelector('.ai-message-content')?.appendChild(btn);
+        } else {
+            const helpText = `**项目规则 (.codeforge.md)**\n\n当前项目还没有规则文件。点击下方按钮，AI 将分析你的项目结构，自动生成一份适配的规则文件。`;
+            const msgEl = addHistoryAiMessage(helpText);
+            const btn = document.createElement('button');
+            btn.className = 'suggestion';
+            btn.textContent = '✨ 一键生成规则';
+            btn.style.marginTop = '8px';
+            btn.onclick = function() {
+                bridge.send({ type: 'generateRules' });
+            };
+            msgEl.querySelector('.ai-message-content')?.appendChild(btn);
+        }
+    };
+    // B1：规则生成开始
+    window.onRulesGenerationStart = function() {
+        addHistoryAiMessage('🤖 正在分析项目结构并生成规则，请稍候...');
+    };
+    // B1：规则生成完成
+    window.onRulesGenerated = function() {
+        addHistoryAiMessage('✅ 规则文件已生成并保存到项目根目录 `.codeforge.md`，已自动加载。');
+        // 刷新规则激活标识
+        const rulesBadge = document.getElementById('rules-badge');
+        if (rulesBadge) rulesBadge.style.display = 'flex';
+    };
+    // B1：规则生成失败
+    window.onRulesGenerationError = function(errMsg) {
+        addHistoryAiMessage('❌ 规则生成失败：' + errMsg);
+    };
+
+    // 以下初始化数据
     if (data.projectName) {
         document.getElementById('project-name').textContent = data.projectName;
     }
@@ -42,6 +100,8 @@ window.onInit = function(data) {
     if (data.defaultMode) {
         selectMode(data.defaultMode);
     }
+    // B1：保存 hasRules 状态
+    state.hasRules = data.hasRules;
     // T15：显示项目规则文件激活标识
     const rulesBadge = document.getElementById('rules-badge');
     const rulesBadgeLabel = document.getElementById('rules-badge-label');
@@ -54,6 +114,15 @@ window.onInit = function(data) {
     // P2-10：Vision 能力初始化
     if (typeof data.visionSupported !== 'undefined') {
         updateVisionSupport(data.visionSupported);
+    }
+    // B6：加载 Prompt 模板到 Slash 命令列表
+    if (data.promptTemplates && Array.isArray(data.promptTemplates)) {
+        data.promptTemplates.forEach(t => {
+            // 避免重复添加
+            if (!SLASH_COMMANDS.find(c => c.id === t.id)) {
+                SLASH_COMMANDS.push({ id: t.id, name: t.name, icon: t.icon, desc: t.desc });
+            }
+        });
     }
 };
 
@@ -508,6 +577,72 @@ function renderPlanConfirm(steps) {
     scrollToBottom();
 }
 
+/** B3：渲染需求澄清卡片 */
+window.renderClarifyCard = function(questions) {
+    removeThinking();
+    const msgEl = document.createElement('div');
+    msgEl.className = 'message ai-message';
+
+    const iconEl = document.createElement('div');
+    iconEl.className = 'ai-icon';
+    iconEl.textContent = '🔥';
+
+    const bubbleEl = document.createElement('div');
+    bubbleEl.className = 'bubble plan-confirm';
+
+    const questionsHtml = questions.map((q, i) =>
+        `<div class="plan-step">
+            <span class="plan-step-status">${i + 1}</span>
+            <div class="plan-step-info">
+                <strong>${escapeHtml(q)}</strong>
+            </div>
+        </div>`
+    ).join('');
+
+    bubbleEl.innerHTML = `
+        <div class="plan-header">🤔 需要澄清 ${questions.length} 个问题</div>
+        <div class="plan-steps">${questionsHtml}</div>
+        <div class="clarify-input-area">
+            <textarea id="clarify-answer-input" rows="3" placeholder="请输入您的回答..."></textarea>
+        </div>
+        <div class="plan-actions">
+            <button class="plan-confirm-btn" onclick="submitClarifyAnswer(this)">
+                ✓ 提交回答
+            </button>
+            <button class="plan-cancel-btn" onclick="skipClarify(this)">
+                跳过直接执行
+            </button>
+        </div>`;
+
+    msgEl.appendChild(iconEl);
+    msgEl.appendChild(bubbleEl);
+    document.getElementById('messages').appendChild(msgEl);
+    scrollToBottom();
+};
+
+/** B3：提交澄清答案 */
+function submitClarifyAnswer(btn) {
+    const input = document.getElementById('clarify-answer-input');
+    if (!input) return;
+    const answer = input.value.trim();
+    if (!answer) {
+        input.style.border = '1px solid #f55';
+        return;
+    }
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    bridge.send({ type: 'clarifyAnswer', answer: answer });
+    // 隐藏卡片
+    btn.closest('.plan-confirm').innerHTML = '<span style="color:#888">已收到回答，AI 正在继续...</span>';
+}
+
+/** B3：跳过澄清 */
+function skipClarify(btn) {
+    btn.disabled = true;
+    bridge.send({ type: 'clarifyAnswer', answer: '' });
+    btn.closest('.plan-confirm').innerHTML = '<span style="color:#888">已跳过，AI 将直接执行...</span>';
+}
+
 /** 用户点击确认执行计划 */
 function confirmPlan(btn, steps) {
     btn.disabled = true;
@@ -621,6 +756,8 @@ function sendMessage() {
 
     // P2-10：清空图片预览区
     clearImagePreviews();
+    // A3：清空文档预览区
+    clearDocumentPreviews();
 
     document.getElementById('welcome-screen').style.display = 'none';
     document.getElementById('messages').style.display = 'flex';
@@ -661,7 +798,21 @@ window.setInputAndSend = function(content) {
 function handleKeyDown(event) {
     if (event.key === 'Escape') {
         closeFilePicker();
+        closeSlashPanel();
         return;
+    }
+    if (state.slashActive) {
+        // A4：Slash 面板打开时：上下键选择指令
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            navigateSlashPanel(event.key === 'ArrowDown' ? 1 : -1);
+            return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+            event.preventDefault();
+            confirmSlashSelection();
+            return;
+        }
     }
     if (state.atSearching) {
         // @ 弹窗打开时：上下键选择文件
@@ -676,16 +827,17 @@ function handleKeyDown(event) {
             return;
         }
     }
-    if (event.key === 'Enter' && !event.shiftKey && !state.atSearching) {
+    if (event.key === 'Enter' && !event.shiftKey && !state.atSearching && !state.slashActive) {
         event.preventDefault();
         sendMessage();
     }
 }
 
-/** 输入框 oninput 统一处理（含 @ 检测） */
+/** 输入框 oninput 统一处理（含 @ 检测 和 / 触发 Slash） */
 function onInputChange(event) {
     autoResize(event.target);
     handleAtTrigger(event.target);
+    handleSlashTrigger(event.target);
 }
 
 function cancelMessage() {
@@ -777,6 +929,275 @@ function clearImagePreviews() {
     area.style.display = 'none';
 }
 
+/**
+ * 清空文档预览区
+ */
+function clearDocumentPreviews() {
+    const area = document.getElementById('doc-preview-area');
+    if (area) {
+        area.innerHTML = '';
+        area.style.display = 'none';
+    }
+    pendingDocs.length = 0;
+}
+
+/**
+ * A3：添加文档预览标签
+ */
+function addDocumentPreview(fileName) {
+    const area = document.getElementById('doc-preview-area');
+    if (!area) return;
+    const idx = pendingDocs.length;
+    pendingDocs.push(fileName);
+
+    const item = document.createElement('div');
+    item.className = 'doc-preview-item';
+    item.dataset.idx = idx;
+
+    const icon = document.createElement('span');
+    icon.className = 'doc-preview-icon';
+    icon.textContent = '📄';
+
+    const name = document.createElement('span');
+    name.className = 'doc-preview-name';
+    name.textContent = fileName;
+    name.title = fileName;
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'doc-preview-remove';
+    removeBtn.textContent = '✕';
+    removeBtn.title = '移除文档';
+    removeBtn.onclick = function() {
+        const i = parseInt(item.dataset.idx, 10);
+        pendingDocs.splice(i, 1);
+        area.querySelectorAll('.doc-preview-item').forEach((el, j) => {
+            el.dataset.idx = j;
+        });
+        item.remove();
+        if (area.querySelectorAll('.doc-preview-item').length === 0) {
+            area.style.display = 'none';
+        }
+    };
+
+    item.appendChild(icon);
+    item.appendChild(name);
+    item.appendChild(removeBtn);
+    area.appendChild(item);
+    area.style.display = 'flex';
+}
+
+/** 待发送的文档列表（由 Kotlin 侧添加） */
+const pendingDocs = [];
+
+// ==================== A4：Slash Commands ====================
+
+/** 内置 Slash 指令列表 */
+const SLASH_COMMANDS = [
+    { id: 'clear',     name: '/clear',     icon: '🗑', desc: '清空当前会话消息' },
+    { id: 'help',      name: '/help',      icon: '❓', desc: '显示功能使用帮助' },
+    { id: 'rules',     name: '/rules',     icon: '📋', desc: '查看/编辑当前 .codeforge.md 规则' },
+    { id: 'checkpoint', name: '/checkpoint', icon: '⏪', desc: '查看 Checkpoint 列表，选择回滚' },
+    { id: 'export',    name: '/export',    icon: '📤', desc: '将当前会话导出为 Markdown 文件' },
+    { id: 'model',     name: '/model',     icon: '⚡', desc: '快速切换模型' },
+    { id: 'review',    name: '/review',    icon: '🔍', desc: '切换到 Review Tab 并刷新文件列表' },
+    { id: 'commit',    name: '/commit',    icon: '📝', desc: '触发 AI 生成 Commit Message' },
+    { id: 'plan',      name: '/plan',       icon: '📌', desc: '切换到 Plan Mode（先规划后执行）' },
+    { id: 'tools',     name: '/tools',      icon: '⚙', desc: '打开工具配置面板' },
+];
+
+/** 打开 Slash 面板 */
+function openSlashPanel() {
+    const panel = document.getElementById('slash-panel');
+    const overlay = document.getElementById('slash-overlay');
+    const searchInput = document.getElementById('slash-search-input');
+    if (!panel || !overlay) return;
+
+    state.slashActive = true;
+    state.slashStartPos = document.getElementById('user-input').selectionStart;
+    state.slashSelectedIndex = 0;
+
+    // 初始显示全部指令
+    state.slashFilteredList = [...SLASH_COMMANDS];
+    renderSlashList('');
+
+    panel.style.display = 'flex';
+    overlay.style.display = 'block';
+    searchInput.value = '';
+    searchInput.focus();
+}
+
+/** 关闭 Slash 面板 */
+function closeSlashPanel() {
+    const panel = document.getElementById('slash-panel');
+    const overlay = document.getElementById('slash-overlay');
+    if (panel) panel.style.display = 'none';
+    if (overlay) overlay.style.display = 'none';
+    state.slashActive = false;
+
+    // 清除输入框中的 / 前缀
+    const input = document.getElementById('user-input');
+    if (input && state.slashStartPos >= 0) {
+        const pos = state.slashStartPos;
+        const val = input.value;
+        if (val.charAt(pos) === '/') {
+            input.value = val.substring(0, pos) + val.substring(pos + 1);
+            input.selectionStart = input.selectionEnd = pos;
+        }
+    }
+    state.slashStartPos = -1;
+}
+
+/** 渲染 Slash 指令列表 */
+function renderSlashList(filter) {
+    const listEl = document.getElementById('slash-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    state.slashFilteredList.forEach((cmd, i) => {
+        const item = document.createElement('div');
+        item.className = 'slash-item' + (i === state.slashSelectedIndex ? ' active' : '');
+        item.dataset.index = i;
+        item.innerHTML = `
+            <span class="slash-item-icon">${cmd.icon}</span>
+            <div class="slash-item-info">
+                <div class="slash-item-name">${cmd.name}</div>
+                <div class="slash-item-desc">${cmd.desc}</div>
+            </div>
+        `;
+        item.onclick = function() {
+            state.slashSelectedIndex = i;
+            confirmSlashSelection();
+        };
+        listEl.appendChild(item);
+    });
+}
+
+/** Slash 搜索过滤 */
+function onSlashSearch(value) {
+    const q = value.toLowerCase();
+    state.slashFilteredList = SLASH_COMMANDS.filter(cmd =>
+        cmd.name.toLowerCase().includes(q) ||
+        cmd.desc.toLowerCase().includes(q)
+    );
+    state.slashSelectedIndex = 0;
+    renderSlashList(value);
+}
+
+/** 上下键导航 Slash 面板 */
+function navigateSlashPanel(dir) {
+    const len = state.slashFilteredList.length;
+    if (len === 0) return;
+    state.slashSelectedIndex = (state.slashSelectedIndex + dir + len) % len;
+    renderSlashList(document.getElementById('slash-search-input').value);
+    // 滚动到可见
+    const listEl = document.getElementById('slash-list');
+    const activeEl = listEl.querySelector('.slash-item.active');
+    if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+/** 确认选中指令 */
+function confirmSlashSelection() {
+    const cmd = state.slashFilteredList[state.slashSelectedIndex];
+    if (!cmd) { closeSlashPanel(); return; }
+
+    // 从输入框移除 / 前缀
+    const input = document.getElementById('user-input');
+    const pos = state.slashStartPos;
+    if (pos >= 0 && input.value.charAt(pos) === '/') {
+        input.value = input.value.substring(0, pos) + input.value.substring(pos + 1);
+    }
+    closeSlashPanel();
+
+    // 执行指令
+    executeSlashCommand(cmd.id);
+}
+
+/** 执行 Slash 指令 */
+function executeSlashCommand(cmdId) {
+    switch (cmdId) {
+        case 'clear':
+            bridge.send({ type: 'clearSession' });
+            break;
+        case 'help':
+            showHelpDialog();
+            break;
+        case 'rules':
+            bridge.send({ type: 'openRules' });
+            break;
+        case 'checkpoint':
+            bridge.send({ type: 'getCheckpoints' });
+            break;
+        case 'export':
+            bridge.send({ type: 'exportSession' });
+            break;
+        case 'model':
+            openModelPicker();
+            break;
+        case 'review':
+            switchTab('review');
+            break;
+        case 'commit':
+            bridge.send({ type: 'generateCommit' });
+            break;
+        case 'plan':
+            selectMode('spec');
+            break;
+        case 'tools':
+            bridge.send({ type: 'openToolConfig' });
+            break;
+    }
+}
+
+/** 显示帮助对话框 */
+function showHelpDialog() {
+    const helpText = `**CodeForge 快捷指令**
+
+\`/clear\`     — 清空当前会话
+\`/help\`      — 显示帮助
+\`/rules\`     — 查看/编辑项目规则
+\`/checkpoint\` — 查看快照并回滚
+\`/export\`    — 导出会话为 Markdown
+\`/model\`     — 切换 AI 模型
+\`/review\`    — 打开代码审查
+\`/commit\`    — 生成 Commit Message
+\`/plan\`      — 切换到 Plan Mode
+\`/tools\`     — 打开工具配置
+
+**快捷键**
+- \`@\` — 引用项目文件
+- \`+\` — 添加图片/文档/指令
+- \`Shift+Enter\` — 换行
+- \`Ctrl+V\` — 粘贴图片`;
+
+    // 渲染帮助文本为 AI 消息
+    const messagesEl = document.getElementById('messages');
+    messagesEl.style.display = 'flex';
+    const msgEl = document.createElement('div');
+    msgEl.className = 'message ai-message';
+
+    const iconEl = document.createElement('div');
+    iconEl.className = 'ai-avatar';
+    iconEl.textContent = '🔥';
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'message-content';
+
+    const bubbleEl = document.createElement('div');
+    bubbleEl.className = 'message-bubble ai-bubble';
+
+    const textEl = document.createElement('div');
+    textEl.className = 'message-text';
+    const html = window.marked ? window.marked.parse(helpText) : escapeHtml(helpText);
+    textEl.innerHTML = html;
+
+    bubbleEl.appendChild(textEl);
+    contentEl.appendChild(bubbleEl);
+    msgEl.appendChild(iconEl);
+    msgEl.appendChild(contentEl);
+    messagesEl.appendChild(msgEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
 // ==================== @文件引用 ====================
 
 let filePickerSelectedIndex = -1;
@@ -821,6 +1242,30 @@ function showFilePicker() {
 /** 关闭文件选择弹窗 */
 function closeFilePicker() {
     document.getElementById('file-picker').style.display = 'none';
+}
+
+/** A4：检测输入是否触发 / 弹出 Slash 面板 */
+function handleSlashTrigger(textarea) {
+    if (state.atSearching) return; // @ 弹窗打开时不处理 /
+    const val = textarea.value;
+    const pos = textarea.selectionStart;
+
+    // 找到光标前最近的 / 位置
+    let slashPos = -1;
+    for (let i = pos - 1; i >= 0; i--) {
+        if (val[i] === '/') { slashPos = i; break; }
+        if (val[i] === ' ' || val[i] === '\n') break;
+    }
+
+    if (slashPos >= 0) {
+        state.slashStartPos = slashPos;
+        openSlashPanel();
+        state.slashSelectedIndex = 0;
+        onSlashSearch('');
+    } else {
+        if (state.slashActive) closeSlashPanel();
+    }
+}
     state.atSearching = false;
     filePickerSelectedIndex = -1;
     filePickerResults = [];
@@ -1452,6 +1897,57 @@ function closeModelDropdown() {
     document.getElementById('model-dropdown-overlay').style.display = 'none';
 }
 
+// P0-A1：+ 号菜单
+function togglePlusMenu() {
+    const menu = document.getElementById('plus-menu');
+    const overlay = document.getElementById('plus-menu-overlay');
+    if (menu.style.display === 'none') {
+        menu.style.display = 'block';
+        overlay.style.display = 'block';
+        // 关闭其他菜单
+        closeModelDropdown();
+        closeChatModeMenu();
+    } else {
+        closePlusMenu();
+    }
+}
+
+function closePlusMenu() {
+    document.getElementById('plus-menu').style.display = 'none';
+    document.getElementById('plus-menu-overlay').style.display = 'none';
+}
+
+function handlePlusMenuAction(action) {
+    closePlusMenu();
+    switch (action) {
+        case 'image':
+            // A2：调用 Kotlin 侧打开图片选择对话框
+            if (window.bridge && window.bridge.send) {
+                bridge.send({ type: 'openImagePicker' });
+            }
+            break;
+        case 'document':
+            // A3：调用 Kotlin 侧打开文档选择对话框
+            if (window.bridge && window.bridge.send) {
+                bridge.send({ type: 'openDocumentPicker' });
+            }
+            break;
+        case 'slash':
+            // A4：触发 Slash Commands（在输入框聚焦时输入 / 会自动弹出）
+            const input = document.getElementById('user-input');
+            if (input) {
+                input.focus();
+                // 插入 / 符号，触发 onInputChange 中的 slash 检测
+                const pos = input.selectionStart;
+                const value = input.value;
+                input.value = value.substring(0, pos) + '/' + value.substring(pos);
+                input.selectionStart = input.selectionEnd = pos + 1;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            break;
+    }
+}
+
 // ==================== 消息渲染 ====================
 
 function addUserMessage(content, images) {
@@ -1582,6 +2078,43 @@ function finalizeLastAiMessage() {
     currentAiEl = null;
     currentAiRaw = '';
     scrollToBottom();
+    // B5：添加反馈按钮
+    addFeedbackButtons();
+}
+
+/** B5：在最后一条 AI 消息上添加反馈和重新生成按钮 */
+function addFeedbackButtons() {
+    const lastAi = document.querySelector('.message.ai-message:last-child .bubble');
+    if (!lastAi || lastAi.querySelector('.feedback-bar')) return;
+    const bar = document.createElement('div');
+    bar.className = 'feedback-bar';
+    bar.innerHTML = `
+        <button class="feedback-btn" title="好" onclick="sendFeedback('like', this)">👍</button>
+        <button class="feedback-btn" title="差" onclick="sendFeedback('dislike', this)">👎</button>
+        <button class="feedback-btn" title="重新生成" onclick="doRegenerate()">🔄</button>`;
+    lastAi.appendChild(bar);
+}
+
+/** B5：发送反馈 */
+function sendFeedback(type, btn) {
+    if (btn.classList.contains('active')) return;
+    // 激活当前按钮（同类反馈）
+    btn.classList.add('active');
+    if (type === 'dislike') {
+        // 弹出原因输入浮层
+        const reason = prompt('请选择或输入反馈原因：\n1. 不准确\n2. 不完整\n3. 格式问题\n4. 其他');
+        if (reason === null) return; // 用户取消
+        bridge.send({ type: 'feedback', feedbackType: type, reason: reason });
+    } else {
+        bridge.send({ type: 'feedback', feedbackType: type });
+    }
+}
+
+/** B5：重新生成 */
+function doRegenerate() {
+    bridge.send({ type: 'regenerate' });
+    // 禁用按钮防止重复点击
+    document.querySelectorAll('.feedback-btn').forEach(b => b.disabled = true);
 }
 
 function appendErrorMessage(message) {

@@ -56,7 +56,17 @@ class CodeForgeSettings : PersistentStateComponent<CodeForgeSettings.State> {
         /** 是否启用行内代码补全（Ghost Text） */
         var inlineCompletionEnabled: Boolean = true,
         /** 行内补全触发延迟（毫秒） */
-        var inlineCompletionDelayMs: Int = 500
+        var inlineCompletionDelayMs: Int = 500,
+        /** 工具配置：工具名 → AUTO/ENABLED/DISABLED */
+        var toolConfig: String = "{}",
+        /** 错误自动修复循环 */
+        var autoFixEnabled: Boolean = true,
+        /** 自动修复最大重试次数 */
+        var autoFixMaxRetries: Int = 3,
+        /** B2：Memory 数据 JSON */
+        var memoryData: String = "[]",
+        /** B6：自定义 Prompt 模板 JSON */
+        var promptTemplates: String = "[]"
     )
 
     private var state = State()
@@ -104,6 +114,46 @@ class CodeForgeSettings : PersistentStateComponent<CodeForgeSettings.State> {
     var inlineCompletionDelayMs: Int
         get() = state.inlineCompletionDelayMs
         set(value) { state.inlineCompletionDelayMs = value }
+
+    /** 工具配置：工具名 → AUTO/ENABLED/DISABLED */
+    var toolConfig: String
+        get() = state.toolConfig
+        set(value) { state.toolConfig = value }
+
+    var autoFixEnabled: Boolean
+        get() = state.autoFixEnabled
+        set(value) { state.autoFixEnabled = value }
+
+    var autoFixMaxRetries: Int
+        get() = state.autoFixMaxRetries
+        set(value) { state.autoFixMaxRetries = value }
+
+    var memoryData: String
+        get() = state.memoryData
+        set(value) { state.memoryData = value }
+
+    var promptTemplates: String
+        get() = state.promptTemplates
+        set(value) { state.promptTemplates = value }
+
+    // ==================== 工具配置 ====================
+
+    enum class ToolMode { AUTO, ENABLED, DISABLED }
+
+    fun getToolMode(toolName: String): ToolMode {
+        return try {
+            val map = gson.fromJson(state.toolConfig, Map::class.java) as? Map<String, String> ?: emptyMap()
+            (map[toolName] ?: "AUTO").let { ToolMode.valueOf(it) }
+        } catch (_: Exception) { ToolMode.AUTO }
+    }
+
+    fun setToolMode(toolName: String, mode: ToolMode) {
+        val map = try {
+            gson.fromJson(state.toolConfig, Map::class.java) as? MutableMap<String, String> ?: mutableMapOf()
+        } catch (_: Exception) { mutableMapOf() }
+        map[toolName] = mode.name
+        state.toolConfig = gson.toJson(map)
+    }
 
     // ==================== Provider 配置读写 ====================
 

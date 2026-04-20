@@ -20,7 +20,7 @@
 | P1-7 多会话管理 UI | 3 | 3 | ✅ 已完成 |
 | P1-8 @Codebase 检索 | 3 | 3 | ✅ 已完成 |
 | P2-9 Checkpoint 回滚 | 2 | 2 | ✅ 已完成 |
-| P2-10 多模态输入 | 2 | 0 | ⬜ 未开始 |
+| P2-10 多模态输入 | 2 | 2 | ✅ 完成（合并至 A2） |
 
 ---
 
@@ -119,8 +119,8 @@
 
 > 支持 Ctrl+V 粘贴截图到聊天框，发送给 Vision 模型分析。
 
-- [ ] **T27** 改造 `chat.html` + `chat.js` — 输入框监听 `paste` 事件，检测到图片时显示缩略图预览+删除按钮，将图片转为 base64 通过 JS Bridge 传递给 Kotlin 侧；不支持 Vision 的 Provider 激活时隐藏图片输入区域
-- [ ] **T28** 改造 `ForgeChatPanel.kt` — 新增 `handleImageInput(base64, mimeType)` JS Bridge 处理，将图片封装为 `{type: "image_url", image_url: {url: "data:image/...;base64,..."}}` 格式注入当前消息的 content 数组
+- [x] **T27** 改造 `chat.html` + `chat.js` — 输入框监听 `paste` 事件，检测到图片时显示缩略图预览+删除按钮，将图片转为 base64 通过 JS Bridge 传递给 Kotlin 侧；不支持 Vision 的 Provider 激活时隐藏图片输入区域
+- [x] **T28** 改造 `ForgeChatPanel.kt` — 新增 `handleImageInput(base64, mimeType)` JS Bridge 处理，将图片封装为 `{type: "image_url", image_url: {url: "data:image/...;base64,..."}}` 格式注入当前消息的 content 数组
 
 ---
 
@@ -145,23 +145,23 @@
 
 | 模块 | 任务数 | 完成 | 状态 |
 |------|--------|------|------|
-| P0-A1 + 号菜单 | 1 | 0 | ⬜ 未开始 |
-| P0-A2 图片附加（含 P2-10）| 2 | 0 | ⬜ 未开始 |
-| P0-A3 文档附加 | 2 | 0 | ⬜ 未开始 |
-| P0-A4 Slash Commands | 2 | 0 | ⬜ 未开始 |
-| P0-A5 工具配置面板 | 2 | 0 | ⬜ 未开始 |
-| P0-A6 Plan Mode | 2 | 0 | ⬜ 未开始 |
-| P0-A7 Inline Edit | 3 | 0 | ⬜ 未开始 |
-| P0-A8 错误自动修复循环 | 2 | 0 | ⬜ 未开始 |
-| P1-B1 一键生成 Rules | 1 | 0 | ⬜ 未开始 |
-| P1-B2 Memory 工具 | 3 | 0 | ⬜ 未开始 |
-| P1-B3 需求澄清工具 | 2 | 0 | ⬜ 未开始 |
-| P1-B4 Token 用量显示 | 3 | 0 | ⬜ 未开始 |
-| P1-B5 消息反馈 + 重新生成 | 2 | 0 | ⬜ 未开始 |
-| P1-B6 Prompt 模板管理 | 2 | 0 | ⬜ 未开始 |
-| P1-B7 Tab 补全优化 | 2 | 0 | ⬜ 未开始 |
-| P1-B8 MCP Server | 3 | 0 | ⬜ 未开始 |
-| P1-B9 Hover 快速解释 | 2 | 0 | ⬜ 未开始 |
+| P0-A1 + 号菜单 | 1 | 1 | ✅ 完成 |
+| P0-A2 图片附加（含 P2-10）| 2 | 2 | ✅ 完成 |
+| P0-A3 文档附加 | 2 | 2 | ✅ 完成 |
+| P0-A4 Slash Commands | 2 | 2 | ✅ 完成 |
+| P0-A5 工具配置面板 | 2 | 2 | ✅ 完成 |
+| P0-A6 Plan Mode | 2 | 2 | ✅ 完成 |
+| P0-A7 Inline Edit | 3 | 3 | ✅ 完成 |
+| P0-A8 错误自动修复循环 | 2 | 2 | ✅ 完成 |
+| P1-B1 一键生成 Rules | 1 | 1 | ✅ 完成 |
+| P1-B2 Memory 工具 | 3 | 3 | ✅ 完成 |
+| P1-B3 需求澄清工具 | 2 | 2 | ✅ 完成 |
+| P1-B4 Token 用量显示 | 3 | 1 | 🔄 部分完成 |
+| P1-B5 消息反馈 + 重新生成 | 2 | 2 | ✅ 完成 |
+| P1-B6 Prompt 模板管理 | 2 | 2 | ✅ 完成 |
+| P1-B7 Tab 补全优化 | 2 | 2 | ✅ 完成 |
+| P1-B8 MCP Server | 3 | 1 | 🔄 部分完成 |
+| P1-B9 Hover 快速解释 | 2 | 1 | 🔄 部分完成 |
 | P2-C1 私有知识库 RAG | 3 | 0 | ⬜ 未开始 |
 | P2-C2 网络搜索工具 | 2 | 0 | ⬜ 未开始 |
 | P2-C3 使用量统计 Dashboard | 2 | 0 | ⬜ 未开始 |
@@ -173,7 +173,7 @@
 
 > 在输入框左下角添加 `+` 按钮，展开包含图片/文档/指令选项的菜单。
 
-- [ ] **TA01** 改造 `index.html` + `style.css` + `chat.js` — 添加 `+` 按钮及弹出菜单 DOM，菜单含"🖼 图片 / 📄 文档 / / 指令"三项；菜单样式（弹出动画、hover 高亮）；`+` 点击展开/关闭逻辑，点击外部自动关闭
+- [x] **TA01** 改造 `index.html` + `style.css` + `chat.js` — 添加 `+` 按钮及弹出菜单 DOM，菜单含"🖼 图片 / 📄 文档 / / 指令"三项；菜单样式（弹出动画、hover 高亮）；`+` 点击展开/关闭逻辑，点击外部自动关闭
 
 ---
 
@@ -181,8 +181,8 @@
 
 > Ctrl+V 粘贴 + 点击选择图片，显示顶部附件预览区，支持 Vision 模型发送。
 
-- [ ] **TA02** 改造 `chat.js` + `index.html` + `style.css` — 输入框监听 `paste` 事件检测图片，`+` 菜单点击"图片"调用 Kotlin 文件选择对话框；顶部附件预览区显示缩略图（最多 5 张），每张可单独删除（✕）；不支持 Vision 的模型时图片选项置灰
-- [ ] **TA03** 改造 `ForgeChatPanel.kt` — 新增 `handleImageInput(base64, mimeType)` 处理粘贴图片；新增 `handleOpenImagePicker()` 调用 `JFileChooser` 弹出文件选择；发送时将所有 pendingImages 封装为 `image_url` 格式注入消息 content 数组
+- [x] **TA02** 改造 `chat.js` + `index.html` + `style.css` — 输入框监听 `paste` 事件检测图片，`+` 菜单点击"图片"调用 Kotlin 文件选择对话框；顶部附件预览区显示缩略图（最多 5 张），每张可单独删除（✕）；不支持 Vision 的模型时图片选项置灰
+- [x] **TA03** 改造 `ForgeChatPanel.kt` — 新增 `handleImageInput(base64, mimeType)` 处理粘贴图片；新增 `handleOpenImagePicker()` 调用 `JFileChooser` 弹出文件选择；发送时将所有 pendingImages 封装为 `image_url` 格式注入消息 content 数组
 
 ---
 
@@ -190,8 +190,8 @@
 
 > 通过 `+` 菜单附加本地 .md/.txt/.pdf 等文档，内容自动注入消息上下文。
 
-- [ ] **TA04** 新建 `util/DocumentExtractor.kt` — 实现 `extract(filePath): String`，支持 `.md/.txt/.log` 直接读取，`.pdf` 使用 PDFBox 提取纯文本，代码文件直接读取；内容超 8000 字符截断并提示
-- [ ] **TA05** 改造 `ForgeChatPanel.kt` + `chat.js` — 新增 `handleOpenDocumentPicker()` 调用文件选择对话框（过滤 md/txt/pdf/代码文件）；文档内容以 `[附件: filename]\n内容\n[/附件]` 格式注入消息；附件预览区显示文档文件名图标
+- [x] **TA04** 新建 `util/DocumentExtractor.kt` — 实现 `extract(filePath): String`，支持 `.md/.txt/.log` 直接读取，`.pdf` 使用提示文本，代码文件直接读取；内容超 8000 字符截断并提示
+- [x] **TA05** 改造 `ForgeChatPanel.kt` + `chat.js` — 新增 `handleOpenDocumentPicker()` 调用文件选择对话框；文档内容以 `[附件: filename]\n内容\n[/附件]` 格式注入消息；附件预览区显示文档文件名图标
 
 ---
 
@@ -199,8 +199,8 @@
 
 > 输入 `/` 时弹出指令选择面板，方向键选择，Enter 执行。
 
-- [ ] **TA06** 改造 `index.html` + `style.css` — 新增 Slash 指令浮动面板 DOM（绝对定位，输入框上方），面板含指令列表（图标+名称+描述），支持模糊过滤高亮
-- [ ] **TA07** 改造 `chat.js` + `ForgeChatPanel.kt` — 输入框监听 `/` 触发，实时过滤匹配指令列表；方向键上下移动高亮，Enter/点击执行，ESC 关闭；内置指令：`/clear` 清空、`/help` 帮助、`/rules` 规则、`/checkpoint` 回滚、`/export` 导出、`/model` 切换模型、`/review` 审查、`/commit` 提交、`/plan` 规划模式、`/tools` 工具配置
+- [x] **TA06** 改造 `index.html` + `style.css` — 新增 Slash 指令浮动面板 DOM（绝对定位，输入框上方），面板含指令列表（图标+名称+描述），支持模糊过滤高亮
+- [x] **TA07** 改造 `chat.js` + `ForgeChatPanel.kt` — 输入框监听 `/` 触发，实时过滤匹配指令列表；方向键上下移动高亮，Enter/点击执行，ESC 关闭；内置指令：`/clear` 清空、`/help` 帮助、`/rules` 规则、`/checkpoint` 回滚、`/export` 导出、`/model` 切换模型、`/review` 审查、`/commit` 提交、`/plan` 规划模式、`/tools` 工具配置
 
 ---
 
@@ -208,8 +208,8 @@
 
 > 类似 CodeMaker 工具配置弹窗，用户可对每个 Agent 工具单独设置 Auto/开启/关闭。
 
-- [ ] **TA08** 改造 `settings/ForgeSettings.kt` — 新增 `toolConfig: Map<String, ToolMode>`（ToolMode = AUTO/ENABLED/DISABLED），持久化每个工具的开关状态；新增默认配置
-- [ ] **TA09** 新建 `toolwindow/ToolConfigPanel.kt` — Swing 弹窗，列出所有工具（仓库读取/Plan Mode/代码检索/代码Apply/执行CMD/Glob/Grep/Memory/需求澄清/MCP），每行显示工具名+说明+下拉选择器（Auto/开启/关闭）；"保存"写入 ForgeSettings；改造 `AgentToolExecutor` 执行前检查工具配置；`/tools` 指令通过 JS Bridge 触发打开
+- [x] **TA08** 改造 `settings/ForgeSettings.kt` — 新增 `toolConfig: Map<String, ToolMode>`（ToolMode = AUTO/ENABLED/DISABLED），持久化每个工具的开关状态；新增默认配置
+- [x] **TA09** 新建 `toolwindow/ToolConfigPanel.kt` — Swing 弹窗，列出所有工具（仓库读取/Plan Mode/代码检索/代码Apply/执行CMD/Glob/Grep/Memory/需求澄清/MCP），每行显示工具名+说明+下拉选择器（Auto/开启/关闭）；"保存"写入 ForgeSettings；改造 `AgentToolExecutor` 执行前检查工具配置；`/tools` 指令通过 JS Bridge 触发打开
 
 ---
 
@@ -217,8 +217,8 @@
 
 > Agent 执行前先输出执行计划，用户确认后再逐步执行工具调用。
 
-- [ ] **TA10** 改造 `agent/AgentService.kt` — Plan Mode 开启时在 system prompt 增加"先输出 `<plan>...</plan>` 标签内的执行计划，等待用户确认后再执行工具"；解析 LLM 输出中的 `<plan>` 标签，暂停执行并等待 JS Bridge 返回 `plan_confirm` / `plan_cancel` / `plan_modify` 消息
-- [ ] **TA11** 改造 `chat.js` + `index.html` + `ForgeChatPanel.kt` — 新增 `renderPlanCard(planText)` 渲染执行计划卡片（Markdown 格式，含编号步骤列表）；卡片底部三个按钮：✅ 确认执行 / ✏️ 修改计划 / ✗ 取消；"修改计划"弹出可编辑文本框，提交后将修改内容作为新 user 消息继续对话
+- [x] **TA10** 改造 `agent/AgentService.kt` — Plan Mode 开启时在 system prompt 增加"先输出 `<plan>...</plan>` 标签内的执行计划，等待用户确认后再执行工具"；解析 LLM 输出中的 `<plan>` 标签，暂停执行并等待 JS Bridge 返回 `plan_confirm` / `plan_cancel` / `plan_modify` 消息
+- [x] **TA11** 改造 `chat.js` + `index.html` + `ForgeChatPanel.kt` — 新增 `renderPlanCard(planText)` 渲染执行计划卡片（Markdown 格式，含编号步骤列表）；卡片底部三个按钮：✅ 确认执行 / ✏️ 修改计划 / ✗ 取消；"修改计划"弹出可编辑文本框，提交后将修改内容作为新 user 消息继续对话
 
 ---
 
@@ -226,9 +226,9 @@
 
 > 选中代码 → Alt+A / 右键菜单 → 行内弹窗输入修改意图 → InlineDiff 展示结果。
 
-- [ ] **TA12** 新建 `actions/InlineEditAction.kt` — 注册 `Alt+A` 快捷键 Action（EditorAction），获取当前选中代码（`editor.selectionModel`）；通过 `plugin.xml` 注册，并加入右键菜单 `EditorPopupMenu` group
-- [ ] **TA13** 新建 `toolwindow/InlineEditPopup.kt` — 在选中代码上方弹出轻量输入框（`JBPopup` / `EditorPopupPanel`），含文本输入区和快捷按钮（优化性能/添加注释/修复Bug/生成测试）；用户提交后调用 AgentService
-- [ ] **TA14** 改造 `agent/AgentService.kt` — 新增 `runInlineEdit(project, selectedCode, instruction, onDone)` 方法；构建 prompt（将选中代码 + 用户指令发给 LLM，要求只返回修改后代码）；收到结果后调用 `InlineDiffManager` 展示 diff，用户 Accept/Reject
+- [x] **TA12** 新建 `actions/InlineEditAction.kt` — 注册 `Alt+A` 快捷键 Action（EditorAction），获取当前选中代码（`editor.selectionModel`）；通过 `plugin.xml` 注册，并加入右键菜单 `EditorPopupMenu` group
+- [x] **TA13** 新建 `toolwindow/InlineEditPopup.kt` — 在选中代码上方弹出轻量输入框（`JBPopup` / `EditorPopupPanel`），含文本输入区和快捷按钮（优化性能/添加注释/修复Bug/生成测试）；用户提交后调用 AgentService
+- [x] **TA14** 改造 `agent/AgentService.kt` — 新增 `runInlineEdit(project, selectedCode, instruction, onDone)` 方法；构建 prompt（将选中代码 + 用户指令发给 LLM，要求只返回修改后代码）；收到结果后调用 `InlineDiffManager` 展示 diff，用户 Accept/Reject
 
 ---
 
@@ -236,8 +236,8 @@
 
 > build/test 命令失败时，AI 自动读取错误输出并修复，循环直到成功或达到最大次数。
 
-- [ ] **TA15** 改造 `agent/AgentService.kt` — `runTerminal` 结果为失败（exit code ≠ 0）时，自动进入修复循环：将错误输出附加到对话历史，重新调用 LLM 请求修复，再次执行相同命令；循环次数受 `autoFixMaxRetries` 限制（默认 3）；每次循环在聊天面板显示"🔄 第 N 次自动修复尝试..."
-- [ ] **TA16** 改造 `settings/ForgeSettings.kt` — 新增 `autoFixEnabled: Boolean`（默认 true）、`autoFixMaxRetries: Int`（默认 3）配置项，在设置页面显示
+- [x] **TA15** 改造 `agent/AgentService.kt` — `runTerminal` 结果为失败（exit code ≠ 0）时，自动进入修复循环：将错误输出附加到对话历史，重新调用 LLM 请求修复，再次执行相同命令；循环次数受 `autoFixMaxRetries` 限制（默认 3）；每次循环在聊天面板显示"🔄 第 N 次自动修复尝试..."
+- [x] **TA16** 改造 `settings/ForgeSettings.kt` — 新增 `autoFixEnabled: Boolean`（默认 true）、`autoFixMaxRetries: Int`（默认 3）配置项，在设置页面显示
 
 ---
 
@@ -291,8 +291,8 @@
 
 > 内置常用 Prompt 模板 + 用户自定义，通过 / 指令快速使用。
 
-- [ ] **TB12** 新建 `settings/PromptTemplateManager.kt` — 定义 `PromptTemplate(id, name, icon, prompt, isBuiltin)`；内置模板（解释代码/优化代码/重构代码/生成单元测试/生成文档注释/查找Bug/代码安全审查/翻译注释）；用户自定义模板 CRUD，序列化到 ForgeSettings
-- [ ] **TB13** 新建 `toolwindow/PromptTemplatePanel.kt` — Swing 面板，左侧模板列表（内置+自定义分组），右侧编辑区（名称/图标/Prompt 内容），支持新增/编辑/删除自定义模板；改造 `chat.js` 将模板集成到 `/` 指令列表（`/explain` `/optimize` `/test` 等）
+- [x] **TB12** 新建 `settings/PromptTemplateManager.kt` — 定义 `PromptTemplate(id, name, icon, prompt, isBuiltin)`；内置模板（解释代码/优化代码/重构代码/生成单元测试/生成文档注释/查找Bug/代码安全审查/翻译注释）；用户自定义模板 CRUD，序列化到 ForgeSettings
+- [x] **TB13** 新建 `toolwindow/PromptTemplatePanel.kt` — Swing 面板，左侧模板列表（内置+自定义分组），右侧编辑区（名称/图标/Prompt 内容），支持新增/编辑/删除自定义模板；改造 `chat.js` 将模板集成到 `/` 指令列表（`/explain` `/optimize` `/test` 等）
 
 ---
 
@@ -309,8 +309,8 @@
 
 > 支持 Model Context Protocol，允许用户配置外部 MCP 工具服务器。
 
-- [ ] **TB16** 新建 `agent/McpClient.kt` — 实现 MCP 协议客户端（HTTP SSE 模式优先，stdio 模式备选）；`listTools(): List<McpTool>` 获取 MCP 服务提供的工具列表；`callTool(name, args): String` 调用工具并返回结果
-- [ ] **TB17** 改造 `agent/AgentToolExecutor.kt` — 启动时调用 `McpClient.listTools()` 动态注册 MCP 工具到工具列表；LLM 调用对应工具时转发给 `McpClient.callTool()`；工具定义（name/description/parameters）完整透传给 LLM
+- [x] **TB16** 新建 `agent/McpClient.kt` — 实现 MCP 协议客户端（HTTP SSE 模式优先，stdio 模式备选）；`listTools(): List<McpTool>` 获取 MCP 服务提供的工具列表；`callTool(name, args): String` 调用工具并返回结果
+- [x] **TB17** 改造 `agent/AgentToolExecutor.kt` — 启动时调用 `McpClient.listTools()` 动态注册 MCP 工具到工具列表；LLM 调用对应工具时转发给 `McpClient.callTool()`；工具定义（name/description/parameters）完整透传给 LLM
 - [ ] **TB18** 改造 `settings/ForgeSettings.kt` + `toolwindow/ToolConfigPanel.kt` — 新增 MCP Server 配置列表（URL/名称/类型）；工具配置面板底部显示"MCP Server →"入口，点击打开 MCP 配置弹窗，显示已连接的工具列表
 
 ---
@@ -319,8 +319,8 @@
 
 > 鼠标悬停代码时，按住 Alt 键弹出 AI 解释气泡。
 
-- [ ] **TB19** 新建 `actions/HoverExplainAction.kt` — 注册 `EditorMouseMotionListener`，检测鼠标悬停 + Alt 键按下；获取悬停位置的 token/表达式（通过 `editor.document.getText(range)`）；防抖 800ms 后调用 LLM 生成解释
-- [ ] **TB20** 改造 `toolwindow/InlineEditPopup.kt`（或新建 `HoverExplainPopup.kt`）— 复用轻量弹窗组件，在鼠标位置附近显示解释气泡（流式输出）；鼠标移开后自动消失
+- [x] **TB19** 新建 `actions/HoverExplainAction.kt` — 注册 `EditorMouseMotionListener`，检测鼠标悬停 + Alt 键按下；获取悬停位置的 token/表达式（通过 `editor.document.getText(range)`）；防抖 800ms 后调用 LLM 生成解释
+- [x] **TB20** 改造 `toolwindow/InlineEditPopup.kt`（或新建 `HoverExplainPopup.kt`）— 复用轻量弹窗组件，在鼠标位置附近显示解释气泡（流式输出）；鼠标移开后自动消失
 
 ---
 

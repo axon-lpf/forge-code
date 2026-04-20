@@ -75,6 +75,18 @@ object AgentToolExecutor {
 {"tool": "run_terminal", "command": "shell 命令"}
 </tool_call>
 
+<tool_call>
+{"tool": "save_memory", "key": "记忆键名", "content": "要记忆的内容"}
+</tool_call>
+
+<tool_call>
+{"tool": "read_memory", "key": "记忆键名"}
+</tool_call>
+
+<tool_call>
+{"tool": "mcp", "server": "MCP服务器URL", "tool": "工具名", "args": {"参数名": "值"}}
+</tool_call>
+
 ## 工具调用约束
 - 每次响应只能包含一个 <tool_call> 块
 - 调用工具时整条消息只输出 <tool_call>...</tool_call>，不要额外解释
@@ -146,14 +158,40 @@ object AgentToolExecutor {
      */
     fun hasToolCall(text: String): Boolean {
         if (text.contains("<tool_call>")) return true
-        val tools = listOf("read_file", "write_file", "list_files", "search_code", "run_terminal")
+        val tools = listOf("read_file", "write_file", "list_files", "search_code", "run_terminal", "save_memory", "read_memory")
         if (tools.any { tool -> text.contains("\"tool\"") && text.contains("\"$tool\"") }) return true
         return false
+    }
+
+    /** 检测文本中是否包含 <clarify> 标签 */
+    fun hasClarify(text: String): Boolean {
+        return text.contains("<clarify>") && text.contains("</clarify>")
+    }
+
+    /** 解析 <clarify> 标签中的问题列表（以 | 分隔） */
+    fun parseClarify(text: String): List<String> {
+        val regex = Regex("<clarify>(.*?)</clarify>", RegexOption.DOT_MATCHES_ALL)
+        return regex.find(text)?.groupValues?.getOrNull(1)
+            ?.split("|")
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
     }
 
     // ==================== 各工具实现 ====================
 
     private fun execute(project: Project, tool: String, params: Map<*, *>): ToolResult {
+        val settings = com.codeforge.plugin.idea.settings.CodeForgeSettings.getInstance()
+        val mode = settings.getToolMode(tool)
+
+        // DISABLED 时直接拒绝
+        if (mode == com.codeforge.plugin.idea.settings.CodeForgeSettings.ToolMode.DISABLED) {
+            return ToolResult(tool, false, "", "工具 [$tool] 当前已被禁用，请在工具配置面板中开启")
+        }
+
+        // AUTO 模式下根据工具性质判断是否可用（此处省略高级逻辑，全部放行）
+        // ENABLED 时始终可用
+
         return when (tool) {
             "read_file"    -> readFile(project, params["path"] as? String ?: "")
             "write_file"   -> writeFile(project, params["path"] as? String ?: "",
@@ -163,6 +201,40 @@ object AgentToolExecutor {
                                          params["keyword"] as? String ?: "",
                                          params["filePattern"] as? String)
             "run_terminal" -> runTerminal(project, params["command"] as? String ?: "")
+            "save_memory" -> {
+                val key = params["key"] as? String ?: ""
+                val content = params["content"] as? String ?: ""
+                if (key.isBlank() || content.isBlank()) {
+                    ToolResult("save_memory", false, "", "key 和 content 不能为空")
+                } else {
+                    MemoryManager.save(key, content, project.basePath ?: "")
+                    ToolResult("save_memory", true, "✅ 已记住：$key")
+                }
+            }
+            "read_memory" -> {
+                val key = params["key"] as? String ?: ""
+                if (key.isBlank()) {
+                    ToolResult("read_memory", false, "", "key 不能为空")
+                } else {
+                    val value = MemoryManager.read(key, project.basePath ?: "")
+                    if (value != null) {
+                        ToolResult("read_memory", true, value)
+                    } else {
+                        ToolResult("read_memory", false, "", "未找到记忆：$key")
+                    }
+                }
+            }
+            "mcp" -> {
+                val serverUrl = params["server"] as? String ?: ""
+                val toolName = params["tool"] as? String ?: ""
+                val args = params["args"] as? Map<*, *> ?: emptyMap<Any, Any>()
+                if (serverUrl.isBlank() || toolName.isBlank()) {
+                    ToolResult("mcp", false, "", "server 和 tool 参数不能为空")
+                } else {
+                    val argsMap: Map<String, Any> = args.entries.associate { it.key.toString() to (it.value?.toString() ?: "") as Any }
+                    ToolResult("mcp", true, McpClient.callTool(serverUrl, toolName, argsMap))
+                }
+            }
             else           -> ToolResult(tool, false, "", "未知工具: $tool")
         }
     }

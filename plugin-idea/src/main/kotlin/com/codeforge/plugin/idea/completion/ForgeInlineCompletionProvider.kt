@@ -21,13 +21,37 @@ class CodeForgeInlineCompletionProvider : InlineCompletionProvider {
 
     companion object {
         /** 补全系统提示词 */
-        private const val SYSTEM_PROMPT = """You are an expert code completion engine. Rules:
-1. Output ONLY the code that should replace <FILL>, nothing else.
-2. Do NOT wrap in markdown code blocks (no ``` markers).
-3. Do NOT add explanations or comments about what you generated.
-4. Match the existing code style (indentation, naming conventions).
-5. Generate 1-5 lines of natural continuation. Stop at a logical breakpoint.
-6. If unsure, output nothing."""
+        private const val SYSTEM_PROMPT = """You are an expert code completion engine. Output ONLY the completion code, no markdown, no explanations."""
+
+        /** 语言对应的注释模式（跳过注释行触发） */
+        private val COMMENT_PATTERNS = mapOf(
+            "java" to setOf("//", "/*", "*/"),
+            "kt" to setOf("//", "/*", "*/"),
+            "js" to setOf("//", "/*"),
+            "ts" to setOf("//", "/*"),
+            "py" to setOf("#", "\"\"\""),
+            "go" to setOf("//", "/*"),
+            "rs" to setOf("//", "/*"),
+            "cpp" to setOf("//", "/*"),
+            "c" to setOf("//", "/*"),
+            "swift" to setOf("//", "/*"),
+            "sql" to setOf("--", "/*")
+        )
+
+        /** 语言对应的 import/package 行模式 */
+        private val IMPORT_PATTERNS = mapOf(
+            "java" to setOf("import ", "package "),
+            "kt" to setOf("import ", "package "),
+            "js" to setOf("import ", "const ", "let ", "function "),
+            "ts" to setOf("import ", "const ", "let ", "function "),
+            "py" to setOf("import ", "from "),
+            "go" to setOf("import ", "package "),
+            "rs" to setOf("use ", "mod "),
+            "cpp" to setOf("#include", "using "),
+            "c" to setOf("#include", "using "),
+            "swift" to setOf("import ", "func "),
+            "sql" to setOf("SELECT", "INSERT", "UPDATE", "CREATE")
+        )
     }
 
     override val id: InlineCompletionProviderID
@@ -59,9 +83,31 @@ class CodeForgeInlineCompletionProvider : InlineCompletionProvider {
         val lastLine = prefix.lines().lastOrNull()?.trim() ?: ""
         if (lastLine.isEmpty()) return InlineCompletionSuggestion.empty()
 
+        // 检测语言
         val fileName = request.file?.name ?: ""
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        val lang = ext.ifBlank { "txt" }
+
+        // B7：过滤不触发补全的场景
+        val commentPatterns = COMMENT_PATTERNS[lang] ?: emptySet()
+        if (commentPatterns.any { lastLine.startsWith(it) }) return InlineCompletionSuggestion.empty()
+
+        val importPatterns = IMPORT_PATTERNS[lang] ?: emptySet()
+        if (importPatterns.any { lastLine.startsWith(it) }) return InlineCompletionSuggestion.empty()
+
+        // B7：检查最后一行是否是纯字符串/注释内容（字符串内不触发）
+        if (lastLine.startsWith("\"") || lastLine.startsWith("'")) return InlineCompletionSuggestion.empty()
+
+        // B7：FIM 格式 Prompt
         val prompt = buildFimPrompt(prefix, suffix, fileName)
-        log.debug("触发行内补全，文件=$fileName，前缀长度=${prefix.length}")
+        log.debug("触发行内补全，文件=$fileName，语言=$lang，前缀长度=${prefix.length}")
+
+        // B7：检查缓存
+        val cacheKey = prefix.take(100).hashCode().toString()
+        CompletionCache.get(prefix)?.let { cached ->
+            log.debug("B7: 补全缓存命中，key=$cacheKey")
+            return InlineCompletionSuggestion.empty() // 缓存命中时跳过本次请求（避免重复）
+        }
 
         return InlineCompletionSuggestion.withFlow {
             // 防抖延迟：等待用户停止输入
@@ -87,7 +133,8 @@ class CodeForgeInlineCompletionProvider : InlineCompletionProvider {
                 onError = { e ->
                     log.debug("补全请求失败: ${e.message}")
                     done.set(true)
-                }
+                },
+                onUsage = { _, _ -> }
             )
 
             // 等待 LLM 返回（最多 8 秒）
@@ -100,6 +147,8 @@ class CodeForgeInlineCompletionProvider : InlineCompletionProvider {
             val completion = postProcess(resultBuffer.toString())
             if (completion.isNotBlank()) {
                 log.debug("补全结果: ${completion.take(80)}...")
+                // B7：写入缓存
+                CompletionCache.put(prefix, completion)
                 emit(InlineCompletionGrayTextElement(completion))
             }
         }
@@ -115,7 +164,7 @@ class CodeForgeInlineCompletionProvider : InlineCompletionProvider {
 
     private fun buildFimPrompt(prefix: String, suffix: String, fileName: String): String {
         val hint = if (fileName.isNotBlank()) "文件: $fileName\n" else ""
-        return "${hint}补全 <FILL> 处的代码（只输出补全内容）:\n\n$prefix<FILL>$suffix"
+        return "${hint}<PRE>$prefix<SUF>$suffix<MID>"
     }
 
     private fun postProcess(raw: String): String =
