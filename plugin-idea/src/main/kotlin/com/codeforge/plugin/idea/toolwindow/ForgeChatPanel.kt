@@ -406,6 +406,9 @@ class CodeForgeChatPanel(private val project: Project) {
                 val newDisplay = newProvider.replace("\"", "\\\"")
                 val modelDisplay = newModel.replace("\"", "\\\"")
                 executeJS("window.onAutoRetry && window.onAutoRetry(\"$failedDisplay\", \"$newDisplay\", \"$modelDisplay\")")
+            },
+            onUsage = { promptTokens, completionTokens ->
+                executeJS("window.onTokenUsage && window.onTokenUsage($promptTokens, $completionTokens)")
             }
         )
     }
@@ -581,6 +584,9 @@ class CodeForgeChatPanel(private val project: Project) {
                 val newDisplay = newProvider.replace("\"", "\\\"")
                 val modelDisplay = newModel.replace("\"", "\\\"")
                 executeJS("window.onAutoRetry && window.onAutoRetry(\"$failedDisplay\", \"$newDisplay\", \"$modelDisplay\")")
+            },
+            onUsage = { promptTokens, completionTokens ->
+                executeJS("window.onTokenUsage && window.onTokenUsage($promptTokens, $completionTokens)")
             }
         )
     }

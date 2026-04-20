@@ -2021,6 +2021,13 @@ html, body {
     color: var(--text-primary);
 }
 
+.token-counter {
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 0 8px;
+    white-space: nowrap;
+}
+
 /* ==================== 离线提示 ==================== */
 .offline-banner {
     position: fixed;

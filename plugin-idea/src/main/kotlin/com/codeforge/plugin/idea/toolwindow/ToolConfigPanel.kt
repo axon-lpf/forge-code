@@ -55,18 +55,33 @@ class ToolConfigPanel(private val project: Project) : DialogWrapper(true) {
         table.columnModel.getColumn(2).preferredWidth = 120
 
         val scrollPane = JScrollPane(table)
-        scrollPane.preferredSize = Dimension(500, 340)
+        scrollPane.preferredSize = Dimension(500, 300)
 
         val headerLabel = JBLabel(
             "<html><b>Agent 工具配置</b><br>" +
             "<font color='gray' size='2'>AUTO = 按场景自动判断 | 开启 = 始终可用 | 关闭 = 始终禁用</font></html>"
         )
 
+        // B8：MCP Server 配置按钮
+        val mcpButton = JButton("MCP Server 配置...")
+        mcpButton.addActionListener {
+            showMcpConfigDialog()
+        }
+
         return FormBuilder.createFormBuilder()
             .addComponent(headerLabel, 1)
             .addComponent(scrollPane, 1)
             .addComponent(JBLabel(" "))
+            .addComponent(mcpButton, 1)
             .panel
+    }
+
+    /**
+     * B8：显示 MCP Server 配置弹窗
+     */
+    private fun showMcpConfigDialog() {
+        val dialog = McpConfigDialog(project)
+        dialog.show()
     }
 
     override fun doOKAction() {
@@ -111,6 +126,119 @@ class ToolConfigPanel(private val project: Project) : DialogWrapper(true) {
         fun show(project: Project) {
             val panel = ToolConfigPanel(project)
             panel.show()
+        }
+    }
+}
+
+/**
+ * B8：MCP Server 配置弹窗
+ * 允许用户添加/删除/启用/禁用 MCP Server，并显示已连接的工具列表
+ */
+class McpConfigDialog(private val project: Project) : DialogWrapper(true) {
+
+    private val settings = CodeForgeSettings.getInstance()
+    private val servers = settings.getMcpServers().toMutableList()
+
+    private val tableModel = McpServerTableModel()
+    private val table = JTable(tableModel)
+
+    init {
+        title = "MCP Server 配置 — CodeForge"
+        init()
+    }
+
+    override fun createCenterPanel(): JComponent {
+        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        table.rowHeight = 28
+        table.columnModel.getColumn(0).preferredWidth = 40  // 启用
+        table.columnModel.getColumn(1).preferredWidth = 150 // 名称
+        table.columnModel.getColumn(2).preferredWidth = 250 // URL
+        table.columnModel.getColumn(3).preferredWidth = 80  // 工具数
+
+        val scrollPane = JScrollPane(table)
+        scrollPane.preferredSize = Dimension(550, 280)
+
+        val addBtn = JButton("添加 Server")
+        addBtn.addActionListener { addServer() }
+
+        val removeBtn = JButton("删除选中")
+        removeBtn.addActionListener {
+            val row = table.selectedRow
+            if (row >= 0 && row < servers.size) {
+                servers.removeAt(row)
+                tableModel.reload()
+            }
+        }
+
+        val testBtn = JButton("测试连接")
+        testBtn.addActionListener { testConnection() }
+
+        val btnPanel = JPanel()
+        btnPanel.layout = BoxLayout(btnPanel, BoxLayout.X_AXIS)
+        btnPanel.add(addBtn)
+        btnPanel.add(Box.createHorizontalStrut(8))
+        btnPanel.add(removeBtn)
+        btnPanel.add(Box.createHorizontalStrut(8))
+        btnPanel.add(testBtn)
+
+        return FormBuilder.createFormBuilder()
+            .addComponent(JBLabel("<html><b>MCP Server 管理</b></html>"), 1)
+            .addComponent(scrollPane, 1)
+            .addComponent(btnPanel, 1)
+            .panel
+    }
+
+    private fun addServer() {
+        val parent = rootPane
+        val name = JOptionPane.showInputDialog(parent, "Server 名称:", "MCP Server")
+            ?: return
+        val url = JOptionPane.showInputDialog(parent, "Server URL (如 http://localhost:8080):", "http://localhost:")
+            ?: return
+        if (url.isBlank()) return
+        servers.add(CodeForgeSettings.McpServerConfig(url = url, name = name, enabled = true))
+        tableModel.reload()
+    }
+
+    private fun testConnection() {
+        val row = table.selectedRow
+        if (row < 0 || row >= servers.size) {
+            JOptionPane.showMessageDialog(rootPane, "请先选中一个 Server")
+            return
+        }
+        val server = servers[row]
+        val tools = com.codeforge.plugin.idea.agent.McpClient.listTools(server.url)
+        if (tools.isEmpty()) {
+            JOptionPane.showMessageDialog(rootPane, "连接失败或无可用工具", "测试结果", JOptionPane.WARNING_MESSAGE)
+        } else {
+            JOptionPane.showMessageDialog(rootPane, "连接成功！发现 ${tools.size} 个工具:\n${tools.joinToString { it.name }}", "测试结果", JOptionPane.INFORMATION_MESSAGE)
+        }
+    }
+
+    override fun doOKAction() {
+        settings.setMcpServers(servers)
+        super.doOKAction()
+    }
+
+    inner class McpServerTableModel : DefaultTableModel(arrayOf<Any>("启用", "名称", "URL", "工具数"), 0) {
+
+        init { reload() }
+
+        fun reload() {
+            setRowCount(0)
+            for (server in servers) {
+                val toolCount = if (server.enabled) {
+                    com.codeforge.plugin.idea.agent.McpClient.listTools(server.url).size
+                } else 0
+                addRow(arrayOf(server.enabled, server.name, server.url, if (toolCount > 0) toolCount else "-"))
+            }
+        }
+
+        override fun isCellEditable(row: Int, col: Int): Boolean = col == 0
+
+        override fun setValueAt(value: Any?, row: Int, col: Int) {
+            if (col == 0 && row < servers.size) {
+                servers[row] = servers[row].copy(enabled = (value as? Boolean) ?: true)
+            }
         }
     }
 }

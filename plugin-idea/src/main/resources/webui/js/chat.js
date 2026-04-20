@@ -24,7 +24,9 @@ const state = {
     visionSupported: false,    // 当前模型是否支持 Vision
     pendingImages: [],         // 待发送的图片列表 [{base64, mimeType, dataUrl}]
     // B1：一键生成 Rules
-    hasRules: false           // 当前项目是否有 .codeforge.md 规则文件
+    hasRules: false,           // 当前项目是否有 .codeforge.md 规则文件
+    // B4：Token 用量
+    tokenUsage: { input: 0, output: 0 }  // 当前会话累计 token
 };
 
 // ==================== 初始化回调（由 Kotlin 调用）====================
@@ -40,6 +42,8 @@ window.onInit = function(data) {
     // A4：清空会话后回调
     window.onSessionCleared = function() {
         state.messages = [];
+        state.tokenUsage = { input: 0, output: 0 };
+        updateTokenDisplay();
         document.getElementById('messages').innerHTML = '';
         document.getElementById('welcome-screen').style.display = 'flex';
     };
@@ -198,6 +202,8 @@ window.onModelSwitched = function(provider, model, visionSupported) {
 /** 新建会话 — Kotlin 创建后通知 JS */
 window.onNewSession = function(data) {
     state.messages = [];
+    state.tokenUsage = { input: 0, output: 0 };
+    updateTokenDisplay();
     state.currentSessionId = data ? data.sessionId : null;
     document.getElementById('messages').innerHTML = '';
     document.getElementById('messages').style.display = 'none';
@@ -2493,6 +2499,37 @@ window.onReviewToken = function(b64) {
     const content = document.getElementById('review-result-content');
     content.scrollTop = content.scrollHeight;
 };
+
+/** B4：Kotlin 回调 — 更新 Token 用量显示 */
+window.onTokenUsage = function(promptTokens, completionTokens) {
+    if (promptTokens > 0 || completionTokens > 0) {
+        state.tokenUsage.input += promptTokens;
+        state.tokenUsage.output += completionTokens;
+    }
+    updateTokenDisplay();
+};
+
+/** B4：更新 Token 计数显示 */
+function updateTokenDisplay() {
+    const el = document.getElementById('token-counter');
+    if (!el) return;
+    const total = state.tokenUsage.input + state.tokenUsage.output;
+    if (total === 0) {
+        el.style.display = 'none';
+        return;
+    }
+    const inputStr = state.tokenUsage.input > 0 ? fmtK(state.tokenUsage.input) : '?';
+    const outputStr = state.tokenUsage.output > 0 ? fmtK(state.tokenUsage.output) : '?';
+    el.textContent = `Tokens: ${inputStr} + ${outputStr} = ${fmtK(total)}`;
+    el.style.display = '';
+}
+
+/** B4：格式化数字为 k/M */
+function fmtK(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+    return String(n);
+}
 
 /** Kotlin 回调：审查完成 */
 window.onReviewDone = function() {

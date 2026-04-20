@@ -60,24 +60,44 @@ class HoverExplainAction : AnAction(), EditorMouseMotionListener {
     }
 
     private fun showExplanation(project: Project, editor: Editor, point: Point, context: String) {
+        hidePopupInternal()
+
         val buffer = StringBuilder()
         val done = AtomicBoolean(false)
+        val currentPanel = AtomicBoolean(false)
 
         val messages = listOf(
             mapOf("role" to "user", "content" to "请简洁解释以下代码片段的含义和作用（1-2句话）：\n\n$context")
         )
 
-        LlmService.getInstance().chatStream(
+        val llm = LlmService.getInstance()
+        llm.ensureInitialized()
+
+        llm.chatStream(
             messages = messages,
-            onToken = { token -> buffer.append(token) },
-            onDone = { done.set(true) },
-            onError = { done.set(true) }
+            onToken = { token ->
+                buffer.append(token)
+                // 流式更新气泡内容
+                val result = buffer.toString().trim()
+                SwingUtilities.invokeLater {
+                    if (result.isNotBlank() && !currentPanel.get()) {
+                        showPopup(editor, point, result)
+                        currentPanel.set(true)
+                    }
+                }
+            },
+            onDone = {
+                done.set(true)
+            },
+            onError = {
+                done.set(true)
+            }
         )
 
         Thread {
             while (!done.get()) Thread.sleep(100)
-            val result = buffer.toString().trim()
             SwingUtilities.invokeLater {
+                val result = buffer.toString().trim()
                 if (result.isNotBlank()) {
                     showPopup(editor, point, result)
                 }

@@ -66,7 +66,9 @@ class CodeForgeSettings : PersistentStateComponent<CodeForgeSettings.State> {
         /** B2：Memory 数据 JSON */
         var memoryData: String = "[]",
         /** B6：自定义 Prompt 模板 JSON */
-        var promptTemplates: String = "[]"
+        var promptTemplates: String = "[]",
+        /** B8：MCP Server 配置列表 JSON */
+        var mcpServers: String = "[]"
     )
 
     private var state = State()
@@ -136,6 +138,11 @@ class CodeForgeSettings : PersistentStateComponent<CodeForgeSettings.State> {
         get() = state.promptTemplates
         set(value) { state.promptTemplates = value }
 
+    /** B8：MCP Server 列表 */
+    var mcpServers: String
+        get() = state.mcpServers
+        set(value) { state.mcpServers = value }
+
     // ==================== 工具配置 ====================
 
     enum class ToolMode { AUTO, ENABLED, DISABLED }
@@ -153,6 +160,52 @@ class CodeForgeSettings : PersistentStateComponent<CodeForgeSettings.State> {
         } catch (_: Exception) { mutableMapOf() }
         map[toolName] = mode.name
         state.toolConfig = gson.toJson(map)
+    }
+
+    // ==================== B8：MCP Server 配置 ====================
+
+    /** MCP Server 配置项 */
+    data class McpServerConfig(
+        val url: String,
+        val name: String,
+        val enabled: Boolean = true
+    )
+
+    /** 获取所有 MCP Server 配置 */
+    fun getMcpServers(): List<McpServerConfig> {
+        return try {
+            val type = object : TypeToken<List<McpServerConfig>>() {}.type
+            gson.fromJson(state.mcpServers, type) ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /** 保存 MCP Server 配置列表 */
+    fun setMcpServers(servers: List<McpServerConfig>) {
+        state.mcpServers = gson.toJson(servers)
+    }
+
+    /** 添加一个 MCP Server */
+    fun addMcpServer(url: String, name: String) {
+        val servers = getMcpServers().toMutableList()
+        servers.removeAll { it.url == url || it.name == name }
+        servers.add(McpServerConfig(url = url, name = name, enabled = true))
+        setMcpServers(servers)
+    }
+
+    /** 删除一个 MCP Server */
+    fun removeMcpServer(url: String) {
+        val servers = getMcpServers().filterNot { it.url == url }
+        setMcpServers(servers)
+    }
+
+    /** 切换 MCP Server 启用状态 */
+    fun setMcpServerEnabled(url: String, enabled: Boolean) {
+        val servers = getMcpServers().map {
+            if (it.url == url) it.copy(enabled = enabled) else it
+        }
+        setMcpServers(servers)
     }
 
     // ==================== Provider 配置读写 ====================

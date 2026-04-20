@@ -203,11 +203,14 @@
             <span id="chat-mode-label">Chat 普通聊天</span>
             <span class="switcher-arrow">∨</span>
         </div>
-        <!-- 右：模型选择 -->
-        <div class="model-selector" onclick="openModelPicker()">
-            <span>⚡</span>
-            <span id="current-model-text">加载中...</span>
-            <span>∨</span>
+        <!-- 右：模型选择 + Token 计数 -->
+        <div style="display:flex; align-items:center; gap:8px;">
+            <div class="token-counter" id="token-counter" style="display:none">Tokens: —</div>
+            <div class="model-selector" onclick="openModelPicker()">
+                <span>⚡</span>
+                <span id="current-model-text">加载中...</span>
+                <span>∨</span>
+            </div>
         </div>
     </div>
 
